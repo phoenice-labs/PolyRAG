@@ -26,7 +26,15 @@ _tmp_dir: Optional[str] = None
 # Pipelines are expensive to create (loads embedder, cross-encoder, etc.)
 # Safe to share for read-only operations; each request uses begin_request/get_traces
 # which are protected by per-pipeline lock below.
-_pipeline_cache: Dict[tuple, Any] = {}
+#
+# LRU eviction: when the cache reaches MAX_CACHED_PIPELINES, the least-recently-used
+# entry is stopped and removed before a new pipeline is added.
+# This prevents unbounded memory growth when developers switch between many
+# (backend, collection, model) combinations during experimentation.
+MAX_CACHED_PIPELINES: int = 10  # ~10 distinct (backend × collection × model) combos
+
+_pipeline_cache: Dict[tuple, Any] = {}          # cache_key → RAGPipeline
+_pipeline_lru: "list[tuple]" = []               # ordered list: [oldest, ..., newest]
 _pipeline_cache_lock = threading.Lock()
 
 # ── Embedding model helpers ───────────────────────────────────────────────────
@@ -66,7 +74,53 @@ def evict_pipeline_cache(backend: str, collection: str) -> None:
     with _pipeline_cache_lock:
         to_remove = [k for k in _pipeline_cache if k[0] == backend and k[1] == collection]
         for key in to_remove:
-            _pipeline_cache.pop(key, None)
+            _evict_key(key)
+
+
+def _evict_key(key: tuple) -> None:
+    """Evict a single pipeline by cache key. Caller must hold _pipeline_cache_lock."""
+    pipeline = _pipeline_cache.pop(key, None)
+    if pipeline is not None:
+        try:
+            pipeline.stop()
+        except Exception:
+            pass
+    if key in _pipeline_lru:
+        _pipeline_lru.remove(key)
+
+
+def _touch_lru(key: tuple) -> None:
+    """Mark key as most-recently-used. Caller must hold _pipeline_cache_lock."""
+    if key in _pipeline_lru:
+        _pipeline_lru.remove(key)
+    _pipeline_lru.append(key)
+
+
+def _enforce_lru_limit() -> None:
+    """Evict the LRU pipeline if the cache is at capacity. Caller must hold lock."""
+    while len(_pipeline_cache) >= MAX_CACHED_PIPELINES:
+        if not _pipeline_lru:
+            break
+        oldest_key = _pipeline_lru[0]
+        _evict_key(oldest_key)
+
+
+def get_pipeline_cache_info() -> Dict[str, Any]:
+    """Return a snapshot of the current pipeline cache state (for /api/system/cache)."""
+    with _pipeline_cache_lock:
+        entries = []
+        for i, key in enumerate(_pipeline_lru):
+            entries.append({
+                "rank": i + 1,       # 1 = oldest (next to evict), N = newest
+                "backend": key[0],
+                "collection": key[1],
+                "embedding_model": key[9] if len(key) > 9 else "unknown",
+            })
+        return {
+            "max_pipelines": MAX_CACHED_PIPELINES,
+            "cached": len(_pipeline_cache),
+            "entries": entries,
+        }
 
 
 def get_feedback_store() -> List[Dict[str, Any]]:
@@ -334,6 +388,8 @@ def create_pipeline(config: Dict[str, Any]):
     if cache_key in _pipeline_cache:
         # Reconfigure lightweight LLM flags on the cached pipeline without rebuilding
         pipeline = _pipeline_cache[cache_key]
+        with _pipeline_cache_lock:
+            _touch_lru(cache_key)
         _reconfigure_llm_flags(pipeline, config)
         return pipeline
 
@@ -343,10 +399,13 @@ def create_pipeline(config: Dict[str, Any]):
             if str(root) not in sys.path:
                 sys.path.insert(0, str(root))
 
+            _enforce_lru_limit()  # evict LRU entry if at capacity
+
             from orchestrator.pipeline import RAGPipeline
             pipeline = RAGPipeline(config)
             pipeline.start()
             _pipeline_cache[cache_key] = pipeline
+            _touch_lru(cache_key)
 
     _reconfigure_llm_flags(_pipeline_cache[cache_key], config)
     return _pipeline_cache[cache_key]

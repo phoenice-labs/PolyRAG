@@ -111,6 +111,88 @@ class Ingestor:
         base_meta = {"source_file": str(path), **(metadata or {})}
         return self.ingest_text(text, metadata=base_meta, collection=collection)
 
+    def ingest_file_streaming(
+        self,
+        path: str,
+        metadata: Optional[Dict] = None,
+        collection: Optional[str] = None,
+        max_doc_size_mb: float = 200.0,
+        progress_callback=None,
+    ) -> IngestionResult:
+        """
+        Stream-chunk a large file and ingest it without loading it fully into RAM.
+
+        Safe for files of arbitrary size — only `chunk_size + overlap` characters
+        are held in memory at any point. Embeddings are upserted in batches of
+        `embed_batch_size` chunks.
+
+        Parameters
+        ----------
+        path              : Path to the text file.
+        metadata          : Key/value pairs attached to every chunk.
+        collection        : Override default collection name.
+        max_doc_size_mb   : Guard — raises ValueError if file exceeds this.
+        progress_callback : Optional callable(chunks_done: int, chunks_est: int)
+                            called after each embedding batch for progress reporting.
+
+        Returns
+        -------
+        IngestionResult with total_chunks upserted.
+        """
+        from core.ingestion.loader import stream_chunk_file, estimate_chunk_count
+
+        collection = collection or self.collection_name
+        doc_id = str(uuid.uuid4())
+        metadata = {
+            "source_file": str(path),
+            "doc_id": doc_id,
+            **(metadata or {}),
+        }
+
+        chunks_est = estimate_chunk_count(path, self._chunk_size, self._overlap)
+        chunks_done = 0
+        batch: List[Document] = []
+        chunk_index = 0
+
+        for chunk_text in stream_chunk_file(
+            path,
+            chunk_size=self._chunk_size,
+            overlap=self._overlap,
+            max_doc_size_mb=max_doc_size_mb,
+        ):
+            chunk_id = _stable_id(doc_id, chunk_index, chunk_text)
+            batch.append(Document(
+                id=chunk_id,
+                text=chunk_text,
+                metadata={
+                    "chunk_index": chunk_index,
+                    **metadata,
+                },
+            ))
+            chunk_index += 1
+
+            if len(batch) >= self._batch_size:
+                self._upsert_batched(collection, batch)
+                chunks_done += len(batch)
+                if progress_callback:
+                    progress_callback(chunks_done, chunks_est)
+                batch = []
+
+        # Flush remaining batch
+        if batch:
+            self._upsert_batched(collection, batch)
+            chunks_done += len(batch)
+            if progress_callback:
+                progress_callback(chunks_done, chunks_est)
+
+        return IngestionResult(
+            total_chunks=chunks_done,
+            upserted=chunks_done,
+            skipped=0,
+            collection=collection,
+            doc_ids=[doc_id],
+        )
+
     def ingest_gutenberg(
         self,
         url: Optional[str] = None,
