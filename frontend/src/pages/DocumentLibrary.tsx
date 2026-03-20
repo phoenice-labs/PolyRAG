@@ -32,19 +32,40 @@ export default function DocumentLibrary() {
   const [clearing, setClearing] = useState(false)
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
 
-  // Enhance Graph state: keyed by collection name
+  // Knowledge Graph state — keyed by collection name (backend-agnostic)
   const [enhanceStatus, setEnhanceStatus] = useState<Record<string, EnhanceStatus>>({})
-  const [enhancing, setEnhancing] = useState<string | null>(null)  // collection being enhanced
+  const [enhancing, setEnhancing] = useState<string | null>(null)
   const [enhanceLogs, setEnhanceLogs] = useState<string[]>([])
-  const [enhanceTarget, setEnhanceTarget] = useState<string | null>(null)  // expanded log panel
+  const [enhanceTarget, setEnhanceTarget] = useState<string | null>(null)
+  // All unique collection names seen across all backends (drives the KG section)
+  const [allCollections, setAllCollections] = useState<string[]>([])
 
-  // Load backend health once
+  // Load backend health + probe all backends for collection names on mount
   useEffect(() => {
     getBackends().then((bs) => {
       const s: Record<string, string> = {}
       bs.forEach((b) => { s[b.name] = b.status })
       setBackendStatus(s)
     }).catch(() => {})
+
+    // Fetch collections from all backends in parallel to build the full KG collection list
+    Promise.allSettled(
+      BACKENDS.map((b) => getCollections(b).catch(() => [] as Collection[]))
+    ).then((results) => {
+      const seen = new Set<string>()
+      results.forEach((r) => {
+        const cols: Collection[] = r.status === 'fulfilled' ? r.value : []
+        cols.forEach((c) => seen.add(c.name))
+      })
+      const names = Array.from(seen).sort()
+      setAllCollections(names)
+      // Load enhance status for every unique collection name
+      names.forEach((name) => {
+        getEnhanceStatus(name)
+          .then((s) => setEnhanceStatus((prev) => ({ ...prev, [name]: s })))
+          .catch(() => {})
+      })
+    })
   }, [])
 
   const loadCollections = useCallback(async (backend: string) => {
@@ -53,7 +74,12 @@ export default function DocumentLibrary() {
     try {
       const data = await getCollections(backend)
       setCollections(data)
-      // Load enhancement status for all collections in parallel
+      // Merge any new collection names into allCollections
+      setAllCollections((prev) => {
+        const merged = new Set([...prev, ...data.map((c) => c.name)])
+        return Array.from(merged).sort()
+      })
+      // Load enhance status for newly seen collections
       data.forEach((col) => {
         getEnhanceStatus(col.name)
           .then((s) => setEnhanceStatus((prev) => ({ ...prev, [col.name]: s })))
@@ -100,15 +126,17 @@ export default function DocumentLibrary() {
 
   const handleEnhanceGraph = async (collection: string) => {
     if (enhancing) return
+    // Use the first healthy backend (graph enhance only needs a backend to read chunks from)
+    const backend = Object.entries(backendStatus).find(([, s]) => s === 'available' || s === 'connected')?.[0] ?? activeTab
     setEnhancing(collection)
     setEnhanceTarget(collection)
-    setEnhanceLogs([`[enhance] Starting LLM graph enhancement for "${collection}" on ${activeTab}…`])
+    setEnhanceLogs([`[enhance] Starting LLM graph enhancement for "${collection}" on ${backend}…`])
 
     try {
       const res = await fetch(`/api/graph/${encodeURIComponent(collection)}/enhance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backend: activeTab, max_chunks: 500 }),
+        body: JSON.stringify({ backend, max_chunks: 500 }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const { job_id } = await res.json()
@@ -210,14 +238,11 @@ export default function DocumentLibrary() {
               <tr className="border-b border-gray-700 bg-gray-800/50">
                 <th className="px-4 py-2.5 text-left text-gray-400 font-medium">Collection</th>
                 <th className="px-4 py-2.5 text-left text-gray-400 font-medium">Chunks</th>
-                <th className="px-4 py-2.5 text-left text-gray-400 font-medium">Knowledge Graph</th>
                 <th className="px-4 py-2.5 text-right text-gray-400 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
               {collections.map((col) => {
-                const es = enhanceStatus[col.name]
-                const isEnhancing = enhancing === col.name
                 return (
                   <tr key={col.name} className="border-b border-gray-800 hover:bg-gray-800/30 transition-colors">
                     <td className="px-4 py-3">
@@ -228,41 +253,6 @@ export default function DocumentLibrary() {
                         ? <span className="text-green-400 font-medium">{col.chunk_count.toLocaleString()}</span>
                         : <span className="text-gray-600">—</span>
                       }
-                    </td>
-                    <td className="px-4 py-3">
-                      {/* Graph status + Enhance button */}
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {es ? (
-                          es.graph_exists ? (
-                            <span className="text-xs text-gray-400">
-                              {es.node_count}n / {es.edge_count}e
-                              {es.llm_enhanced
-                                ? <span className="ml-1 text-indigo-400" title={`LLM enhanced at ${es.llm_enhanced_at}`}>✦ LLM</span>
-                                : <span className="ml-1 text-gray-600"> (spaCy only)</span>
-                              }
-                            </span>
-                          ) : (
-                            <span className="text-xs text-gray-600 italic">no graph yet</span>
-                          )
-                        ) : (
-                          <span className="text-xs text-gray-700">…</span>
-                        )}
-                        <button
-                          onClick={() => handleEnhanceGraph(col.name)}
-                          disabled={isEnhancing || !!enhancing}
-                          className={`px-2 py-0.5 text-xs rounded border transition-colors flex items-center gap-1 ${
-                            es?.llm_enhanced
-                              ? 'bg-indigo-900/30 border-indigo-700 text-indigo-300 hover:bg-indigo-800/50'
-                              : 'bg-indigo-800/50 border-indigo-600 text-indigo-200 hover:bg-indigo-700/70'
-                          } disabled:opacity-40`}
-                          title={es?.llm_enhanced
-                            ? `Re-run LLM enhancement (last run: ${es.llm_enhanced_at})`
-                            : 'Run LLM entity/relation extraction to enrich the knowledge graph'
-                          }
-                        >
-                          {isEnhancing ? <><span className="animate-spin">⟳</span> Enhancing…</> : <>🧠 {es?.llm_enhanced ? 'Re-enhance' : 'Enhance Graph'}</>}
-                        </button>
-                      </div>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -309,6 +299,73 @@ export default function DocumentLibrary() {
               <div key={i} className="text-xs font-mono text-gray-300 whitespace-pre-wrap">{line}</div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ── Knowledge Graph section (backend-agnostic, one entry per collection) ── */}
+      {allCollections.length > 0 && (
+        <div className="bg-gray-900 rounded-lg border border-indigo-900/50 overflow-hidden">
+          <div className="px-4 py-2.5 bg-indigo-950/40 border-b border-indigo-900/40 flex items-center justify-between">
+            <span className="text-sm font-medium text-indigo-300">🕸 Knowledge Graph</span>
+            <span className="text-xs text-gray-500">Shared across all backends — build once per collection</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800 bg-gray-800/30">
+                <th className="px-4 py-2 text-left text-gray-400 font-medium">Collection</th>
+                <th className="px-4 py-2 text-left text-gray-400 font-medium">Nodes</th>
+                <th className="px-4 py-2 text-left text-gray-400 font-medium">Edges</th>
+                <th className="px-4 py-2 text-left text-gray-400 font-medium">Status</th>
+                <th className="px-4 py-2 text-right text-gray-400 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allCollections.map((name) => {
+                const es = enhanceStatus[name]
+                const isEnhancing = enhancing === name
+                return (
+                  <tr key={name} className="border-b border-gray-800 hover:bg-gray-800/20 transition-colors">
+                    <td className="px-4 py-2.5 font-mono text-gray-200 text-xs">{name}</td>
+                    <td className="px-4 py-2.5 text-gray-400 text-xs">
+                      {es ? (es.graph_exists ? es.node_count : <span className="text-gray-600">—</span>) : <span className="text-gray-700">…</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-gray-400 text-xs">
+                      {es ? (es.graph_exists ? es.edge_count : <span className="text-gray-600">—</span>) : <span className="text-gray-700">…</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs">
+                      {es ? (
+                        es.llm_enhanced
+                          ? <span className="text-indigo-400" title={`LLM enhanced at ${es.llm_enhanced_at}`}>✦ LLM enhanced</span>
+                          : es.graph_exists
+                            ? <span className="text-gray-500">spaCy only</span>
+                            : <span className="text-gray-600 italic">no graph yet</span>
+                      ) : <span className="text-gray-700">…</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <button
+                        onClick={() => handleEnhanceGraph(name)}
+                        disabled={!!enhancing}
+                        className={`px-2 py-0.5 text-xs rounded border transition-colors flex items-center gap-1 ml-auto ${
+                          es?.llm_enhanced
+                            ? 'bg-indigo-900/30 border-indigo-700 text-indigo-300 hover:bg-indigo-800/50'
+                            : 'bg-indigo-800/50 border-indigo-600 text-indigo-200 hover:bg-indigo-700/70'
+                        } disabled:opacity-40`}
+                        title={es?.llm_enhanced
+                          ? `Re-run LLM enhancement (last run: ${es.llm_enhanced_at})`
+                          : 'Run LLM entity/relation extraction to enrich the knowledge graph'
+                        }
+                      >
+                        {isEnhancing
+                          ? <><span className="animate-spin">⟳</span> Enhancing…</>
+                          : <>🧠 {es?.llm_enhanced ? 'Re-enhance' : 'Enhance Graph'}</>
+                        }
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
