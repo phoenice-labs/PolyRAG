@@ -12,13 +12,20 @@
 #   -NoDocker    — skip Docker vector DB containers
 #   -NoFrontend  — skip React UI (port 3000)
 #   -NoApi       — skip FastAPI server (port 8000)
+#   -Workers N   — number of API worker processes (default: 1 = uvicorn dev mode)
+#                  Set N > 1 to use gunicorn with UvicornWorker for production load.
+#                  Requires: pip install gunicorn  (already in requirements.txt)
+#                  Example:  .\start.ps1 -Workers 4
+#                  Note: each worker has its own pipeline cache — no shared state.
+#                  Use N = (CPU cores × 2) + 1 as a starting point.
 
 param(
     [ValidateSet("start","stop","restart","status","env")]
     [string]$Action = "start",
     [switch]$NoDocker,
     [switch]$NoFrontend,
-    [switch]$NoApi
+    [switch]$NoApi,
+    [int]$Workers = 1
 )
 
 $ErrorActionPreference = "SilentlyContinue"  # avoid crashing on missing processes
@@ -341,13 +348,38 @@ function Do-Start {
                 Wait-PortFree 8000 10
             }
             Write-Info "Starting FastAPI server on http://localhost:8000 ..."
-            $apiProc = Start-Process -FilePath (Join-Path $venvPath "Scripts\uvicorn.exe") `
-                -ArgumentList "api.main:app","--reload","--port","8000" `
-                -WorkingDirectory $base `
-                -PassThru -WindowStyle Hidden
+            if ($Workers -gt 1) {
+                # ── Production mode: gunicorn + UvicornWorker ──────────────────
+                $gunicornExe = Join-Path $venvPath "Scripts\gunicorn.exe"
+                if (-not (Test-Path $gunicornExe)) {
+                    Write-Warn "gunicorn not found — falling back to single uvicorn worker."
+                    Write-Warn "Install with: .\.venv\Scripts\pip install gunicorn"
+                    $Workers = 1
+                } else {
+                    Write-Info "Multi-worker mode: $Workers workers (gunicorn + UvicornWorker)"
+                    Write-Info "Each worker has its own pipeline cache — no shared state."
+                    $apiProc = Start-Process -FilePath $gunicornExe `
+                        -ArgumentList "api.main:app",
+                            "-w", $Workers,
+                            "-k", "uvicorn.workers.UvicornWorker",
+                            "--bind", "0.0.0.0:8000",
+                            "--timeout", "120",
+                            "--graceful-timeout", "30" `
+                        -WorkingDirectory $base `
+                        -PassThru -WindowStyle Hidden
+                }
+            }
+            if ($Workers -le 1) {
+                # ── Development mode: uvicorn with --reload ────────────────────
+                $apiProc = Start-Process -FilePath (Join-Path $venvPath "Scripts\uvicorn.exe") `
+                    -ArgumentList "api.main:app","--reload","--port","8000" `
+                    -WorkingDirectory $base `
+                    -PassThru -WindowStyle Hidden
+            }
             if ($null -ne $apiProc) {
                 $pids["api"] = $apiProc.Id
-                Write-Ok "API server started (PID $($apiProc.Id))."
+                $mode = if ($Workers -gt 1) { "gunicorn/$Workers workers" } else { "uvicorn/dev" }
+                Write-Ok "API server started (PID $($apiProc.Id), mode: $mode)."
             } else {
                 Write-Err "Failed to start API server."
             }

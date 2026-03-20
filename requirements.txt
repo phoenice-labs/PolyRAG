@@ -64,3 +64,8 @@ uvicorn[standard]>=0.29.0
 sse-starlette>=2.1.0
 python-multipart>=0.0.9
 aiofiles>=23.2.1
+
+# ── Scalability: Rate limiting + Multi-worker production server ───────────────
+slowapi>=0.1.9          # Per-IP rate limiting middleware for FastAPI
+gunicorn>=22.0.0        # Multi-worker WSGI/ASGI server (used with UvicornWorker)
+                        # Usage: .\start.ps1 -Workers 4
