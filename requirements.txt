@@ -64,3 +64,8 @@ uvicorn[standard]>=0.29.0
 sse-starlette>=2.1.0
 python-multipart>=0.0.9
 aiofiles>=23.2.1
+
+# -- Load testing ---------------------------------------------------------------
+# Locust: concurrent load simulation for validating scalability fixes.
+# Run: .\scripts\load-test.ps1  (or: locust -f tests/load/locustfile.py)
+locust>=2.24
