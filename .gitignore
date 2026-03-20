@@ -1,0 +1,79 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.whl
+
+# ── pytest / coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+baseline.txt
+
+# ── Data directory — runtime only, fully regenerable ─────────────────────────
+# Keep the directory skeleton but not the data files
+data/chromadb/
+data/faiss/
+data/graph.kuzu/
+data/graph.kuzu
+data/graphs/
+data/splade/
+data/profiles/
+data/*.jsonl
+data/*.txt
+data/*.bin
+data/*.pkl
+data/*.index
+data/*.png
+data/*.json
+data/jobs.jsonl
+
+# Keep the .gitkeep marker so the directory structure is preserved
+!data/.gitkeep
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+secrets.yaml
+
+# ── Editor / OS ──────────────────────────────────────────────────────────────
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Node / Frontend ──────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── Model cache (HuggingFace downloads) ──────────────────────────────────────
+.cache/
+~/.cache/huggingface/
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+# Keep compose file, exclude runtime volumes
+docker-volumes/
+
+# ── Service runtime files ─────────────────────────────────────────────────────
+.service-pids.json

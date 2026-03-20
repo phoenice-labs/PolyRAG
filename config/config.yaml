@@ -1,0 +1,158 @@
+# ── Phoenice-PolyRAG  —  config.yaml ─────────────────────────────────────────
+# Switch `store.backend` to any of the six supported backends.
+# All other orchestration code stays unchanged.
+# Environment variable overrides: POLYRAG_BACKEND, POLYRAG_COLLECTION, etc.
+
+store:
+  backend: chromadb   # chromadb | faiss | qdrant | weaviate | milvus | pgvector
+
+  chromadb:
+    mode: persistent    # memory | persistent  ← persistent saves to ./data/chromadb
+    path: ./data/chromadb
+
+  faiss:
+    mode: persistent    # memory | persistent  ← persistent saves index + metadata to ./data/faiss
+    path: ./data/faiss
+    index_type: Flat    # Flat | HNSW
+
+  qdrant:
+    mode: server        # memory | server  ← server persists via Docker volume (docker-compose.polyrag.yml)
+    url: http://localhost:6333
+    api_key:            # leave blank for local / open-source
+
+  weaviate:
+    mode: server        # embedded | server  ← server persists via Docker volume
+    host: localhost
+    http_port: 8088     # as mapped in docker-compose.polyrag.yml
+    grpc_port: 50052
+    api_key:
+
+  milvus:
+    mode: server        # local (Milvus Lite, Linux/macOS only) | server
+    uri: ":memory:"     # only used in local mode; ignored when mode=server
+    host: localhost
+    port: 19530
+
+  pgvector:
+    host: localhost
+    port: 5433          # as mapped in docker-compose.polyrag.yml (5433→5432)
+    database: polyrag
+    user: postgres
+    password: postgres
+
+
+embedding:
+  provider: sentence_transformer   # only open-source provider in Phase 1
+  model: all-MiniLM-L6-v2          # 384-dim, ~80 MB, fast on CPU
+  device: cpu                       # cpu | cuda | mps
+  batch_size: 32
+
+
+ingestion:
+  collection_name: polyrag_main
+  chunk_size: 512        # target child chunk size in characters
+  chunk_overlap: 64      # overlap between consecutive child chunks
+  embed_batch_size: 32   # documents per embedding batch
+
+
+retrieval:
+  reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  relevance_threshold: 0.0
+  recall_multiplier: 5
+
+  # ── SPLADE: Sparse Neural Retrieval ──────────────────────────────────────
+  # SPLADE (naver/splade-v3, Apache 2.0) learns term-importance weights via
+  # a BERT masked-language-model head.  Beats BM25 on MS MARCO (MRR@10: 40.2
+  # vs ~18) while remaining fully lexical and interpretable.
+  #
+  # First startup downloads ~440 MB model from HuggingFace (cached).
+  # Subsequent restarts load pre-encoded vectors from persist_dir in <1 s.
+  #
+  # Weights: Dense=1.0, SPLADE=1.0, BM25=0.8 (BM25 down-weighted because
+  # SPLADE subsumes most of its lexical signal while adding term expansion).
+  splade:
+    enabled: false              # toggle here or via frontend — false = zero overhead
+    model: naver/splade-v3      # Apache 2.0; best sparse model (MRR@10 40.2)
+    persist_dir: ./data/splade  # pre-encoded sparse vectors; rebuilt once per ingest
+    splade_weight: 1.0          # RRF weight for SPLADE signal
+    bm25_weight_with_splade: 0.8  # BM25 RRF weight when SPLADE is active
+
+
+llm:
+  base_url: http://localhost:1234/v1
+  model: mistralai/ministral-3b
+  temperature: 0.2
+  max_tokens: 512
+  timeout: 60
+  context_turns: 5
+  enable_rewrite: true
+  enable_stepback: false
+  enable_multi_query: true
+  enable_hyde: true
+  n_paraphrases: 3
+
+
+access:
+  user_clearance: INTERNAL
+
+
+quality:
+  min_score: 0.3
+  dedup_threshold: 0.85
+
+
+# ── Phase 10: Knowledge Graph (GraphRAG) ─────────────────────────────────────
+# Enables 3-way hybrid search: vector + BM25 + Knowledge Graph traversal
+graph:
+  enabled: true
+  backend: kuzu           # networkx (in-memory/tests) | kuzu (embedded persistent) | neo4j (enterprise)
+  spacy_model: en_core_web_sm
+  max_hops: 2             # max graph hops from query entities (0=direct, 1=1-hop, 2=2-hop)
+  graph_weight: 1.0       # RRF weight for graph signal (1.0 = same weight as vector+BM25)
+  extract_svo: true       # extract Subject-Verb-Object triples via dependency parsing
+  extract_cooccurrence: true  # extract co-occurrence edges (any two entities in same sentence)
+
+  # Kuzu: embedded, persistent, no server required (default)
+  kuzu:
+    db_path: ./data/graph.kuzu
+
+  # Neo4j: enterprise migration — same Cypher queries, change driver only
+  neo4j:
+    uri: bolt://localhost:7687
+    user: neo4j
+    password: password
+    database: neo4j
+
+  # Phase 11a: LLM-enhanced entity/relation extraction (supplements spaCy)
+  llm_extraction:
+    enabled: false          # true = use LM Studio to extract richer relations
+    merge_with_spacy: true  # false = LLM only (no spaCy); true = merge both sources
+    max_chunk_chars: 2000   # max chars per chunk sent to LLM
+
+
+# ── Phase 11: Advanced Retrieval Techniques ───────────────────────────────────
+# All subsystems degrade gracefully when disabled or when LM Studio is offline.
+advanced_retrieval:
+
+  # RAPTOR: Hierarchical summary index for broad/conceptual queries
+  # Call pipeline.build_raptor_index() after all ingestion is complete.
+  raptor:
+    enabled: false          # true = build cluster summaries via LLM after ingest
+    n_clusters: 10          # target number of cluster summaries per ingest run
+    summary_weight: 0.7     # weight of summary results (vs leaf chunk score)
+
+  # Contextual LLM Re-ranking: one batched LLM call ranks retrieved chunks
+  # Adds ~1-3 seconds latency per query (one LM Studio call)
+  contextual_reranker:
+    enabled: false          # true = blend LLM relevance score with retrieval score
+    llm_weight: 0.4         # 0.0 = ignore LLM, 1.0 = pure LLM ranking
+    max_chunks_to_rank: 10  # cap for latency control
+
+  # MMR: Maximal Marginal Relevance diversity re-ranking (no LLM required)
+  # Prevents top-K results from being near-duplicate paraphrases
+  mmr:
+    enabled: true           # true = apply diversity-aware re-ranking
+    diversity_weight: 0.3   # 0.0 = pure relevance, 1.0 = pure diversity
+
+
+audit_log_path: ./data/ingestion_audit.jsonl

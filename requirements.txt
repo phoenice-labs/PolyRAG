@@ -1,0 +1,66 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
+pydantic>=2.5,<3.0
+pyyaml>=6.0
+python-dotenv>=1.0
+requests>=2.31
+
+# ── Embeddings (open-source, fully local, all run on CPU) ─────────────────────
+# NOTE: install.ps1 installs CPU-only torch first to avoid the large CUDA download.
+#
+# Supported embedding models (all Apache 2.0, selected via Settings UI):
+#
+#   Model                     Dim   ~Size   Speed (CPU)   MTEB Score
+#   ─────────────────────────────────────────────────────────────────
+#   all-MiniLM-L6-v2          384    80 MB   ~5 ms/chunk   56.3  (default)
+#   BAAI/bge-base-en-v1.5     768   440 MB  ~15 ms/chunk   63.6
+#   BAAI/bge-large-en-v1.5   1024   1.3 GB  ~40 ms/chunk   64.2
+#
+# SparseEncoder (for SPLADE naver/splade-v3) requires sentence-transformers >= 3.0.
+sentence-transformers>=3.0
+
+# ── Vector Stores ─────────────────────────────────────────────────────────────
+chromadb>=0.5.0
+faiss-cpu>=1.7.4
+qdrant-client>=1.9.0
+weaviate-client>=4.5.0    # Server adapter (docker-compose.polyrag.yml)
+pymilvus>=2.4.0           # Milvus standalone (docker-compose.polyrag.yml)
+psycopg2-binary>=2.9.9    # PGVector adapter (docker-compose.polyrag.yml)
+pgvector>=0.3.5           # PGVector Python type support
+
+# ── Phase 3: BM25 keyword search ──────────────────────────────────────────────
+rank-bm25>=0.2.2
+
+# ── Phase 3b: SPLADE sparse neural retrieval ──────────────────────────────────
+# Uses SparseEncoder from sentence-transformers (no extra package needed).
+# Model: naver/splade-v3 (Apache 2.0, ~440 MB, downloaded on first use).
+# Toggle from frontend → Settings → Embedding Model.
+
+# ── Phase 5: LM Studio (OpenAI-compatible API) ────────────────────────────────
+openai>=1.0
+
+# ── Phase 9: Near-duplicate detection (optional but recommended) ──────────────
+datasketch>=1.6.4
+
+# ── Phase 10: Knowledge Graph (GraphRAG) ─────────────────────────────────────
+spacy>=3.7               # NER + dependency parsing for entity/relation extraction
+networkx>=3.3            # in-memory graph (tests / fallback)
+kuzu>=0.7.0              # embedded persistent graph DB (Cypher-compatible with Neo4j)
+# neo4j>=5.0             # Uncomment for Neo4j enterprise adapter
+
+# ── Comparison / Reporting ───────────────────────────────────────────────────
+tabulate>=0.9.0            # console table formatting for backend comparison
+matplotlib>=3.8            # chart generation for comparison reports
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=8.0
+pytest-asyncio>=0.23
+pytest-playwright>=0.5
+playwright>=1.40
+httpx>=0.27
+
+# ── API Server ────────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+sse-starlette>=2.1.0
+python-multipart>=0.0.9
+aiofiles>=23.2.1

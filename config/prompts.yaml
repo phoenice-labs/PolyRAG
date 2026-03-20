@@ -1,0 +1,116 @@
+prompts:
+  query_rewriter:
+    method_name: Query Rewriting
+    method_id: 5
+    pipeline_stage: Query Expansion
+    description: 'Rewrites the raw user query to maximize document retrieval quality.
+      Expands acronyms, removes conversational filler, adds domain-relevant synonyms.
+      The rewritten query is used for all subsequent retrieval steps.
+
+      '
+    template: You are a search query optimiser. Rewrite the given query to maximise
+      document retrieval quality. Expand acronyms, clarify ambiguities, and add relevant
+      synonyms. Output ONLY the rewritten query — no explanation.
+  hyde:
+    method_name: HyDE Expansion
+    method_id: 6
+    pipeline_stage: Query Expansion
+    description: 'Hypothetical Document Embeddings (HyDE): generates a short hypothetical
+      answer passage, embeds it, and uses that embedding for dense retrieval. Often
+      outperforms embedding the raw question for factual/passage retrieval.
+
+      '
+    template: You are a document writing assistant. Write a short, factual passage
+      (2-4 sentences) that would directly answer the question. Write the passage as
+      if it came from an authoritative source. Output ONLY the passage — no preamble.
+  multi_query:
+    method_name: Multi-Query Generation
+    method_id: 7
+    pipeline_stage: Query Expansion
+    description: 'Generates N paraphrases of the query from different angles, retrieves
+      for each, then union-merges and RRF-fuses the results for significantly higher
+      recall. The original query is always included as one of the N queries.
+
+      '
+    template: Generate {n} distinct search query paraphrases for the question below.
+      Each paraphrase should approach the topic from a different angle. Output ONLY
+      the paraphrases, one per line, no numbering.
+  step_back:
+    method_name: Step-Back Prompting
+    method_id: 8
+    pipeline_stage: Query Expansion
+    description: 'Abstracts the specific query to a broader, more general form (Zheng
+      et al. 2023). The broader question retrieves relevant background context that
+      may not match the specific phrasing, improving recall for detailed/specific
+      queries.
+
+      '
+    template: Given a specific question, generate a more general, abstract question
+      that covers the same topic. This broader question should help retrieve relevant
+      background information. Output ONLY the broader question.
+  contextual_reranker:
+    method_name: Contextual Re-ranking
+    method_id: 9
+    pipeline_stage: Re-ranking
+    description: 'One batched LLM call ranks all retrieved candidate chunks by relevance
+      to the query. The LLM rank score is blended with the original retrieval score
+      (controlled by llm_weight). Uses 1 LLM call for up to max_chunks_to_rank chunks
+      — minimizes latency.
+
+      '
+    template: 'You are a search relevance expert. Rank these passages from MOST to
+      LEAST relevant to the question.
+
+      Question: {query}
+
+      {passages}
+
+      Return ONLY a JSON object with passage numbers ranked best-first: {{"ranking":
+      [<most_relevant>, ..., <least_relevant>]}} Include all {n} numbers exactly once.
+      Example for 3 passages: {{"ranking": [2, 1, 3]}}'
+  raptor_summarizer:
+    method_name: RAPTOR Summarization
+    method_id: 10
+    pipeline_stage: Index Build (Post-Ingestion)
+    description: 'Builds a hierarchical summary tree (RAPTOR: Sarthi et al. 2024)
+      after ingestion. Clusters leaf chunks by embedding similarity, then summarizes
+      each cluster via LLM. Improves recall for broad/conceptual queries that no single
+      chunk fully answers.
+
+      '
+    template: 'Synthesize the following text passages into a single coherent summary
+      paragraph. Capture all key entities, concepts, dates, and relationships. Be
+      concise (3-5 sentences). Include only information present in the passages.
+
+      Passages: {passages}
+
+      Summary:'
+  graph_entity_extractor:
+    method_name: LLM Graph Entity Extraction
+    method_id: 4
+    pipeline_stage: Index Build (Ingestion)
+    description: 'Supplements spaCy NER with LLM-based entity and relation extraction
+      during ingestion. Produces richer relation triples that improve knowledge graph
+      traversal quality. Only runs when graph.llm_extraction.enabled=true in config.yaml.
+
+      '
+    template: "Extract all named entities and their relationships from the text below.\
+      \ Return ONLY a JSON object — no explanation, no markdown:\n{\n  \"entities\"\
+      : [\n    {\"text\": \"Entity Name\", \"type\": \"PERSON|ORG|LOCATION|DATE|EVENT|LAW|PRODUCT|CONCEPT\"\
+      }\n  ],\n  \"relations\": [\n    {\"subject\": \"Entity A\", \"predicate\":\
+      \ \"relationship_verb\", \"object\": \"Entity B\"}\n  ]\n}\nRules: - Use short\
+      \ lowercase verbs for predicates: \"founded\", \"governs\", \"works_for\", \"\
+      references\", \"co_occurs\" - Only include relations between entities you listed\
+      \ - If no entities, return {\"entities\": [], \"relations\": []}\nText: {text}"
+  answer_generation:
+    method_name: Answer Generation
+    method_id: 0
+    pipeline_stage: Answer Synthesis
+    description: 'Generates the final synthesized answer from the top retrieved chunks.
+      Uses citations [1], [2] etc. to ground the answer in retrieved evidence. Responds
+      with "Insufficient evidence" when context is inadequate.
+
+      '
+    template: You are a precise, trustworthy assistant. Answer the question using
+      ONLY the provided context passages. If the context is insufficient, say 'Insufficient
+      evidence'. Cite passage numbers [1], [2], etc. in your answer.

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "phoenice-polyrag"
+version = "0.1.0"
+description = "Enterprise-grade, trustworthy RAG with a unified interface across 6 vector store backends"
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+dependencies = [
+    "pydantic>=2.5,<3.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "sentence-transformers>=2.7",
+    "chromadb>=0.5.0",
+    "faiss-cpu>=1.7.4",
+    "qdrant-client>=1.9.0",
+]
+
+[project.optional-dependencies]
+weaviate = ["weaviate-client>=4.5"]
+milvus   = ["pymilvus>=2.4"]
+pgvector = ["psycopg2-binary>=2.9", "pgvector>=0.3.5"]
+all      = ["phoenice-polyrag[weaviate,milvus,pgvector]"]
+dev      = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "orchestrator*"]
