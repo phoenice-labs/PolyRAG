@@ -29,12 +29,13 @@ from api.routers import (
     prompts as prompts_router,
     traces as traces_router,
     retrieval_trails as retrieval_trails_router,
+    system as system_router,
 )
 
 app = FastAPI(
     title="Phoenice-PolyRAG API",
     description="Multi-backend RAG server with 12 retrieval methods and unified /api/rag agentic endpoint.",
-    version="14.1.0",
+    version="14.2.0",
 )
 
 # ── CORS (wide open for development) ─────────────────────────────────────────
@@ -106,6 +107,7 @@ app.include_router(jobs_router.router, prefix="/api")
 app.include_router(prompts_router.router, prefix="/api")
 app.include_router(traces_router.router, prefix="/api")
 app.include_router(retrieval_trails_router.router, prefix="/api")
+app.include_router(system_router.router, prefix="/api")
 
 
 # ── Health endpoint ───────────────────────────────────────────────────────────
@@ -115,7 +117,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "service": "Phoenice-PolyRAG API",
-        "version": "14.1.0",
+        "version": "14.2.0",
         "rate_limiting": _rate_limiting_enabled,
     }
 
