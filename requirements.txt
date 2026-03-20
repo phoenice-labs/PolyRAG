@@ -64,3 +64,10 @@ uvicorn[standard]>=0.29.0
 sse-starlette>=2.1.0
 python-multipart>=0.0.9
 aiofiles>=23.2.1
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+# RAGAS: LLM-judged RAG quality metrics (faithfulness, answer_relevancy,
+# context_precision, context_recall). Requires LM Studio at localhost:1234.
+# Gracefully disabled when LM Studio is offline.
+ragas>=0.4.0
+langchain-openai>=0.1.0   # LangChain wrapper — bridges LM Studio ↔ RAGAS judge LLM
