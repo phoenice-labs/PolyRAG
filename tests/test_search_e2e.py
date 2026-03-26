@@ -103,11 +103,11 @@ def api_client():
     """httpx client pointed at the running backend; auto-skips if offline."""
     httpx = pytest.importorskip("httpx")
     try:
-        r = httpx.get(f"{BACKEND_URL}/health", timeout=30)
+        r = httpx.get(f"{BACKEND_URL}/api/health", timeout=30)
         r.raise_for_status()
     except Exception:
         pytest.skip(f"Backend not reachable at {BACKEND_URL}")
-    return httpx.Client(base_url=BACKEND_URL, timeout=30)
+    return httpx.Client(base_url=f"{BACKEND_URL}/api", timeout=300)
 
 
 @pytest.fixture(scope="function")
