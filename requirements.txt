@@ -76,3 +76,8 @@ gunicorn>=22.0.0        # Multi-worker WSGI/ASGI server (used with UvicornWorker
 # Gracefully disabled when LM Studio is offline.
 ragas>=0.4.0
 langchain-openai>=0.1.0   # LangChain wrapper — bridges LM Studio ↔ RAGAS judge LLM
+
+# -- Load testing ---------------------------------------------------------------
+# Locust: concurrent load simulation for validating scalability fixes.
+# Run: .\scripts\load-test.ps1  (or: locust -f tests/load/locustfile.py)
+locust>=2.24
