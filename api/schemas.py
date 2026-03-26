@@ -189,6 +189,7 @@ class BackendSearchResult(BaseModel):
     graph_entities: List[str] = Field(default_factory=list)
     graph_paths: List[str] = Field(default_factory=list)
     latency_ms: float = 0.0
+    method_contributions: Dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None
 
 
@@ -245,6 +246,7 @@ class CompareChunkPreview(BaseModel):
     chunk_id: str
     text: str
     score: float
+    method_lineage: List[MethodContribution] = Field(default_factory=list)
 
 
 class CompareBackendResult(BaseModel):
@@ -267,6 +269,7 @@ class CompareBackendResult(BaseModel):
     latency_no_graph_ms: float = 0.0
     latency_with_graph_ms: float = 0.0
     error: Optional[str] = None
+    method_contributions: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CompareSummary(BaseModel):

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { runEvaluation, browseChunks, generateQA, type QAPair, type EvalResult, type EvalScore, type RetrievalMethodsReq, type BrowseChunk } from '../api/evaluate'
 import { getCollections, type Collection } from '../api/backends'
+import RetrievalTrace from '../components/RetrievalTrace/RetrievalTrace'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -828,6 +829,15 @@ export default function EvaluationStudio() {
                                               <ScoreBar label="G" value={res.scores.graph_source_hit} color="bg-indigo-500" />
                                             )}
                                           </div>
+                                          {res.method_contributions && Object.keys(res.method_contributions).length > 0 && (
+                                            <div className="mt-2">
+                                              <RetrievalTrace
+                                                methodContributions={res.method_contributions}
+                                                answer={res.answer}
+                                                label="Method Traceability"
+                                              />
+                                            </div>
+                                          )}
                                           {((res.graph_entities?.length ?? 0) > 0 || (res.graph_paths?.length ?? 0) > 0) && (
                                             <div className="mt-3 space-y-2">
                                               {(res.graph_entities?.length ?? 0) > 0 && (

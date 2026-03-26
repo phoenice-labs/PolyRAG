@@ -26,6 +26,7 @@ from api.schemas import (
     CompareRequest,
     CompareResponse,
     CompareSummary,
+    MethodContribution,
 )
 
 router = APIRouter(tags=["compare"])
@@ -143,15 +144,41 @@ def _run_backend_compare(
                 result_counts.append(n_results)
 
                 # ── Chunk previews & IDs (for preview panel + overlap) ────
-                chunk_previews = [
-                    CompareChunkPreview(
+                chunk_previews = []
+                for r in (resp_base.results or []):
+                    raw_lineage = r.document.metadata.get("_method_lineage", []) if r.document.metadata else []
+                    lineage = [
+                        MethodContribution(
+                            method=m["method"] if isinstance(m, dict) else getattr(m, "method", ""),
+                            rank=m["rank"] if isinstance(m, dict) else getattr(m, "rank", 1),
+                            rrf_contribution=m["rrf_contribution"] if isinstance(m, dict) else getattr(m, "rrf_contribution", 0.0),
+                        )
+                        for m in (raw_lineage if isinstance(raw_lineage, list) else [])
+                    ]
+                    chunk_previews.append(CompareChunkPreview(
                         chunk_id=str(r.document.id),
                         text=(r.document.text or "")[:300],
                         score=float(r.score),
-                    )
-                    for r in (resp_base.results or [])
-                ]
+                        method_lineage=lineage,
+                    ))
                 chunk_ids = [str(r.document.id) for r in (resp_base.results or [])]
+
+                # ── Aggregate method contributions from chunk lineages ─────
+                method_chunk_count: dict = {}
+                total_chunks = len(chunk_previews)
+                for cp in chunk_previews:
+                    seen_methods = set()
+                    for ml in cp.method_lineage:
+                        if ml.method not in seen_methods:
+                            method_chunk_count[ml.method] = method_chunk_count.get(ml.method, 0) + 1
+                            seen_methods.add(ml.method)
+                method_contributions = {
+                    method: {
+                        "chunks_contributed": count,
+                        "contribution_pct": round(count / total_chunks * 100, 1) if total_chunks > 0 else 0.0,
+                    }
+                    for method, count in method_chunk_count.items()
+                }
 
                 # ── Graph trail: entities + paths from graph-enabled run ──
                 graph_entities: List[str] = list(resp_base.graph_entities or [])
@@ -203,6 +230,7 @@ def _run_backend_compare(
                         score_delta=score_delta,
                         latency_no_graph_ms=round(lat_no_graph, 1),
                         latency_with_graph_ms=round(lat_with_graph, 1),
+                        method_contributions=method_contributions,
                     )
                 )
             except Exception as exc:

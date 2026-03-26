@@ -175,6 +175,27 @@ def _run_evaluate(
                 # Fallback: plain ask() when expansion failed
                 resp = pipeline.ask(question, top_k=5)
 
+            # Compute method contributions from chunk lineages
+            eval_chunks = resp.results or []
+            eval_method_count: dict = {}
+            eval_total = len(eval_chunks)
+            for r in eval_chunks:
+                meta = r.document.metadata if r.document.metadata else {}
+                raw_lineage = meta.get("_method_lineage", [])
+                seen = set()
+                for m in (raw_lineage if isinstance(raw_lineage, list) else []):
+                    method_name = m["method"] if isinstance(m, dict) else getattr(m, "method", "")
+                    if method_name and method_name not in seen:
+                        eval_method_count[method_name] = eval_method_count.get(method_name, 0) + 1
+                        seen.add(method_name)
+            method_contributions = {
+                method: {
+                    "chunks_contributed": count,
+                    "contribution_pct": round(count / eval_total * 100, 1) if eval_total > 0 else 0.0,
+                }
+                for method, count in eval_method_count.items()
+            }
+
             scores = _score_answer(
                 resp.answer, expected_answer, question, expected_sources, resp.results,
                 graph_chunks=[
@@ -201,6 +222,7 @@ def _run_evaluate(
                 **ragas_block,
                 "graph_entities": list(resp.graph_entities or []),
                 "graph_paths": [str(p) for p in (resp.graph_paths or [])],
+                "method_contributions": method_contributions,
             }
         except Exception as exc:
             per_backend[backend] = {"error": str(exc), "scores": {}}

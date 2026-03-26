@@ -17,6 +17,7 @@ import {
   type CompareRow, type ComparePerQueryRow, type CompareChunkPreview,
 } from '../api/compare'
 import { getCollections, type Collection } from '../api/backends'
+import RetrievalTrace from '../components/RetrievalTrace/RetrievalTrace'
 
 // ── Backend metadata ────────────────────────────────────────────────────────
 const ALL_BACKENDS = ['faiss', 'chromadb', 'qdrant', 'weaviate', 'milvus', 'pgvector']
@@ -249,9 +250,11 @@ function OverlapMatrix({ perQuery, backends }: { perQuery: ComparePerQueryRow[];
 }
 
 // Feature 1 — Chunk Preview Panel (with optional graph trail)
-function ChunkPreviewPanel({ chunks, backend, query, graphEntities, graphPaths, onClose }: {
+function ChunkPreviewPanel({ chunks, backend, query, graphEntities, graphPaths, methodContributions, onClose }: {
   chunks: CompareChunkPreview[]; backend: string; query: string
-  graphEntities?: string[]; graphPaths?: string[]; onClose: () => void
+  graphEntities?: string[]; graphPaths?: string[]
+  methodContributions?: Record<string, { chunks_contributed?: number; contribution_pct?: number }>
+  onClose: () => void
 }) {
   const [tab, setTab] = useState<'chunks' | 'graph'>('chunks')
   const hasGraph = (graphEntities?.length ?? 0) + (graphPaths?.length ?? 0) > 0
@@ -291,6 +294,13 @@ function ChunkPreviewPanel({ chunks, backend, query, graphEntities, graphPaths, 
                   <p className="text-xs text-gray-300 leading-relaxed">{c.text}{c.text.length >= 300 ? '…' : ''}</p>
                 </div>
               ))}
+              {(methodContributions || chunks.some(c => c.method_lineage?.length)) && (
+                <RetrievalTrace
+                  methodContributions={methodContributions}
+                  chunks={chunks.map(c => ({ chunk_id: c.chunk_id, text: c.text, score: c.score, method_lineage: c.method_lineage }))}
+                  label={`Method Traceability — ${backend}`}
+                />
+              )}
             </>
           ) : (
             <div className="space-y-4">
@@ -681,6 +691,7 @@ export default function ComparisonMatrix() {
           query={previewRow.query}
           graphEntities={previewRow.graph_entities}
           graphPaths={previewRow.graph_paths}
+          methodContributions={previewRow.method_contributions}
           onClose={() => setPreviewRow(null)}
         />
       )}

@@ -249,6 +249,9 @@ def _run_search_with_bundle(
         # Use real per-phase trace collected inside pipeline.query()
         trace = _build_real_trace(pipeline, chunks)
 
+        # Compute contributions before building result so it appears in API response
+        contributions = _compute_method_contributions(pipeline, chunks, methods_used or {})
+
         result = BackendSearchResult(
             backend=backend,
             answer=response.answer or "",
@@ -258,10 +261,10 @@ def _run_search_with_bundle(
             graph_entities=list(response.graph_entities or []),
             graph_paths=[str(p) for p in (response.graph_paths or [])],
             latency_ms=round(latency_ms, 2),
+            method_contributions=contributions,
         )
 
-        # Persist retrieval trail with method contributions
-        contributions = _compute_method_contributions(pipeline, chunks, methods_used or {})
+        # Persist retrieval trail
         _append_trail(query, backend, methods_used or {}, pipeline, chunks, latency_ms, bundle,
                       contributions)
 
@@ -339,6 +342,7 @@ def _run_search_with_bundle(
                     graph_entities=list(response.graph_entities or []),
                     graph_paths=[str(p) for p in (response.graph_paths or [])],
                     latency_ms=round(latency_ms, 2),
+                    method_contributions=_compute_method_contributions(pipeline, chunks, methods_used or {}),
                 )
                 _append_trail(query, backend, methods_used or {}, pipeline, chunks, latency_ms, bundle)
                 return result

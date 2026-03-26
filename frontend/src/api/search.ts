@@ -17,6 +17,15 @@ export interface MethodContribution {
   rrf_contribution: number
 }
 
+// Per-method aggregate contribution stat (used in RetrievalTrace)
+export interface MethodContributionStat {
+  candidates_before?: number
+  candidates_after?: number
+  delta?: number
+  chunks_contributed?: number
+  contribution_pct?: number
+}
+
 // Matches API SearchResultItem
 export interface SearchResultItem {
   chunk_id: string
@@ -39,6 +48,7 @@ export interface BackendSearchResult {
   graph_entities: string[]
   graph_paths: string[]
   latency_ms: number
+  method_contributions?: Record<string, MethodContributionStat>
   error?: string
 }
 
@@ -57,6 +67,7 @@ export interface SearchResponse {
   llm_traces?: LLMTraceEntry[]
   graph_entities?: string[]
   latency_ms?: number
+  method_contributions?: Record<string, MethodContributionStat>
   error?: string
 }
 
@@ -99,6 +110,7 @@ export const search = async (req: SearchRequest): Promise<SearchResponse[]> => {
     llm_traces: r.llm_traces ?? [],
     graph_entities: r.graph_entities,
     latency_ms: r.latency_ms,
+    method_contributions: r.method_contributions,
     error: r.error,
   }))
 }

@@ -1,4 +1,5 @@
 import { api } from './client'
+import type { MethodContributionStat } from './search'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,7 @@ export interface EvalResult {
   scores: EvalScore
   graph_entities?: string[]
   graph_paths?: string[]
+  method_contributions?: Record<string, MethodContributionStat>
   error?: string
 }
 
@@ -154,6 +156,7 @@ export async function runEvaluation(req: EvalRequest): Promise<EvalResponse> {
         scores,
         graph_entities: data.graph_entities,
         graph_paths: data.graph_paths,
+        method_contributions: (data as Record<string, unknown>).method_contributions as Record<string, MethodContributionStat> | undefined,
         error: data.error,
       })
       if (!summaryAcc[backend]) summaryAcc[backend] = { f: 0, r: 0, s: 0, n: 0 }

@@ -493,8 +493,6 @@ export default function SearchLab() {
     }
   }
 
-  const allTraceSteps = results.flatMap((r) => r.trace ?? [])
-
   return (
     <div className="flex gap-4 h-full">
       {/* Sidebar */}
@@ -635,7 +633,16 @@ export default function SearchLab() {
           )}
         </div>
 
-        {allTraceSteps.length > 0 && <RetrievalTrace steps={allTraceSteps} />}
+        {results.map((res) => (
+          <RetrievalTrace
+            key={`trace-${res.backend}`}
+            steps={res.trace ?? []}
+            methodContributions={res.method_contributions}
+            chunks={res.results?.map(r => ({ chunk_id: r.chunk_id, text: r.text, score: r.score, method_lineage: r.method_lineage }))}
+            answer={res.answer}
+            label={`Retrieval Trace — ${res.backend}`}
+          />
+        ))}
 
         {/* Persistent Retrieval Trails (always visible, auto-reloads after each search) */}
         <TrailsPanel searchCount={trailSearchCount} />
