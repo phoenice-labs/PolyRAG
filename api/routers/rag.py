@@ -375,7 +375,7 @@ def delete_profile(profile_id: str):
     response_model=RagAnswer,
     summary="Unified RAG query — production agentic endpoint",
 )
-def rag_query(req: RagRequest):
+async def rag_query(req: RagRequest):
     """
     **Production-grade single-call RAG endpoint for agentic AI integration.**
 
@@ -420,6 +420,8 @@ def rag_query(req: RagRequest):
     - `graph` — knowledge graph entities and relation paths (if graph methods enabled)
     - `llm_traces` — every LLM call made: prompt, response, latency (for observability)
     """
+    import asyncio
+
     # ── 1. Resolve effective configuration ────────────────────────────────────
     profile: Optional[RagProfile] = None
     if req.profile_id:
@@ -449,17 +451,22 @@ def rag_query(req: RagRequest):
         enable_mmr=methods.enable_mmr,
     )
 
-    # ── 3. Phase 1 — Query expansion (runs once, backend-agnostic LLM calls) ─
-    _pipeline, bundle, expansion_traces = _expand_query(config, req.query)
+    # ── 3. Phase 1 — Query expansion (once, backend-agnostic LLM calls) ──────
+    # Run in a thread so the FastAPI event loop stays unblocked
+    _pipeline, bundle, expansion_traces = await asyncio.to_thread(
+        _expand_query, config, req.query
+    )
 
     # ── 4. Phase 2 — Retrieval + reranking + answer ───────────────────────────
-    result = _run_search_with_bundle(
-        config=config,
-        query=req.query,
-        top_k=top_k,
-        bundle=bundle,
-        expansion_traces=expansion_traces,
-        methods_used=methods.model_dump(),
+    # Also offloaded to thread — CPU-bound embedding + BM25 must not block
+    result = await asyncio.to_thread(
+        _run_search_with_bundle,
+        config,
+        req.query,
+        top_k,
+        bundle,
+        expansion_traces,
+        methods.model_dump(),
     )
 
     if result.error:

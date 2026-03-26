@@ -11,8 +11,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.routers import (
     ingest as ingest_router,
@@ -33,7 +34,7 @@ from api.routers import (
 app = FastAPI(
     title="Phoenice-PolyRAG API",
     description="Multi-backend RAG server with 12 retrieval methods and unified /api/rag agentic endpoint.",
-    version="14.0.0",
+    version="14.1.0",
 )
 
 # ── CORS (wide open for development) ─────────────────────────────────────────
@@ -45,6 +46,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Rate Limiting ─────────────────────────────────────────────────────────────
+# Per-IP limits protect the server under concurrent agentic load.
+# Limits are intentionally generous for a developer/integration context.
+# Adjust via config.yaml system.rate_limits when deploying to production.
+#
+# Limits (per IP, per minute):
+#   /api/rag        → 60 req/min  (production agents; ~1 req/sec sustained)
+#   /api/search     → 30 req/min  (exploration; more expensive, multi-backend)
+#   /api/ingest     → 10 req/min  (heavy background work)
+#   global fallback → 120 req/min (all other endpoints)
+
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.util import get_remote_address
+
+    limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    # Attach per-route limits via middleware so they apply without decorating each route
+    @app.middleware("http")
+    async def rate_limit_by_path(request: Request, call_next):
+        path = request.url.path
+        # Per-path overrides (tighter than global 120/min)
+        route_limits = {
+            "/api/rag": "60/minute",
+            "/api/search": "30/minute",
+            "/api/ingest": "10/minute",
+        }
+        # Resolve which limit applies (exact path match, strip trailing slash)
+        for prefix, limit in route_limits.items():
+            if path.rstrip("/").startswith(prefix):
+                request.state._rate_limit_override = limit
+                break
+        return await call_next(request)
+
+    _rate_limiting_enabled = True
+
+except ImportError:
+    # slowapi not installed — rate limiting silently disabled
+    # Install with: pip install slowapi
+    _rate_limiting_enabled = False
 
 # ── Mount routers ─────────────────────────────────────────────────────────────
 
@@ -67,7 +112,12 @@ app.include_router(retrieval_trails_router.router, prefix="/api")
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "Phoenice-PolyRAG API"}
+    return {
+        "status": "ok",
+        "service": "Phoenice-PolyRAG API",
+        "version": "14.1.0",
+        "rate_limiting": _rate_limiting_enabled,
+    }
 
 
 # ── Startup: pre-warm embedding model ────────────────────────────────────────
