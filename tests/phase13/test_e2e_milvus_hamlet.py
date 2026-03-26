@@ -82,7 +82,7 @@ def hamlet_pipeline(hamlet_text):
         chunk_size=400,
         chunk_strategy="sentence",
         overlap=50,
-        enable_er=False,
+        enable_er=True,
     )
 
     pipeline = create_pipeline(config)

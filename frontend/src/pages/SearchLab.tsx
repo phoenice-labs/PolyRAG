@@ -138,6 +138,30 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
                           </span>
                         ))}
                     </div>
+                    {/* Method Contribution Bars */}
+                    {trail.method_contributions && Object.keys(trail.method_contributions).length > 0 && (
+                      <div className="mt-2">
+                        <div className="text-xs font-semibold text-gray-500 mb-1">Method Contributions</div>
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(trail.method_contributions)
+                            .filter(([, s]) => (s.contribution_pct ?? 0) > 0)
+                            .sort(([, a], [, b]) => (b.contribution_pct ?? 0) - (a.contribution_pct ?? 0))
+                            .map(([method, stats]) => (
+                              <div key={method} className="flex items-center gap-1 text-xs bg-blue-50 rounded px-2 py-0.5">
+                                <span className="font-medium text-blue-700">{method.replace('enable_', '')}</span>
+                                <div className="w-16 bg-blue-100 rounded-full h-1.5">
+                                  <div
+                                    className="bg-blue-500 h-1.5 rounded-full"
+                                    style={{ width: `${Math.min(stats.contribution_pct ?? 0, 100)}%` }}
+                                  />
+                                </div>
+                                <span className="text-blue-600">{stats.contribution_pct?.toFixed(1)}%</span>
+                              </div>
+                            ))
+                          }
+                        </div>
+                      </div>
+                    )}
                     {/* Query expansion variants */}
                     {trail.query_variants && Object.keys(trail.query_variants).length > 0 && (
                       <div className="space-y-1 border-l-2 border-gray-700 pl-2">

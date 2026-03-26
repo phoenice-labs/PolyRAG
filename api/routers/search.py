@@ -102,6 +102,7 @@ def _append_trail(
     chunks: list,
     latency_ms: float,
     bundle,
+    method_contributions: dict | None = None,
 ) -> None:
     """Build and persist one retrieval trail record."""
     _append_retrieval_trail({
@@ -118,9 +119,59 @@ def _append_trail(
             }
             for s in getattr(pipeline, "_last_retrieval_trace", [])
         ],
+        "method_contributions": method_contributions or {},
         "result_count": len(chunks),
         "latency_ms": round(latency_ms, 2),
     })
+
+
+def _compute_method_contributions(pipeline, chunks: list, methods_used: dict) -> dict:
+    """
+    Compute per-method contribution to the final result set.
+    Reads _last_retrieval_trace (set by pipeline.query()) and correlates
+    with chunk metadata (_method_lineage) to produce marginal contribution stats.
+    Returns a dict keyed by method name.
+    """
+    contributions: dict = {}
+    trace = getattr(pipeline, "_last_retrieval_trace", []) or []
+
+    # Build candidate-count contribution from retrieval trace steps
+    for step in trace:
+        method = step.get("method", "unknown")
+        before = step.get("candidates_before", 0)
+        after = step.get("candidates_after", 0)
+        contributions[method] = {
+            "candidates_before": before,
+            "candidates_after": after,
+            "delta": after - before,
+        }
+
+    # Compute per-method chunk lineage from result metadata
+    method_chunk_counts: dict[str, int] = {}
+    for chunk in chunks:
+        lineage = getattr(chunk, "method_lineage", None) or []
+        for entry in lineage:
+            m = getattr(entry, "method", None) or entry.get("method", "")
+            if m:
+                method_chunk_counts[m] = method_chunk_counts.get(m, 0) + 1
+
+    total_chunks = len(chunks) or 1
+    for method, count in method_chunk_counts.items():
+        if method not in contributions:
+            contributions[method] = {"candidates_before": 0, "candidates_after": 0, "delta": 0}
+        contributions[method]["chunks_contributed"] = count
+        contributions[method]["contribution_pct"] = round(count / total_chunks * 100, 1)
+
+    # Annotate which methods were requested but contributed nothing
+    for flag, enabled in methods_used.items():
+        method_key = flag.replace("enable_", "")
+        if enabled and method_key not in contributions and method_key not in method_chunk_counts:
+            contributions[method_key] = {
+                "candidates_before": 0, "candidates_after": 0, "delta": 0,
+                "chunks_contributed": 0, "contribution_pct": 0.0,
+            }
+
+    return contributions
 
 
 def _expand_query(config: dict, question: str):
@@ -209,8 +260,10 @@ def _run_search_with_bundle(
             latency_ms=round(latency_ms, 2),
         )
 
-        # Persist retrieval trail
-        _append_trail(query, backend, methods_used or {}, pipeline, chunks, latency_ms, bundle)
+        # Persist retrieval trail with method contributions
+        contributions = _compute_method_contributions(pipeline, chunks, methods_used or {})
+        _append_trail(query, backend, methods_used or {}, pipeline, chunks, latency_ms, bundle,
+                      contributions)
 
         return result
     except Exception as exc:
