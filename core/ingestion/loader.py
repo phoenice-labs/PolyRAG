@@ -143,3 +143,88 @@ def naive_chunk_text(
         chunks.append(current)
 
     return chunks
+
+
+# ── Streaming chunker (large document support) ────────────────────────────────
+
+def stream_chunk_file(
+    path: str | Path,
+    chunk_size: int = 512,
+    overlap: int = 64,
+    encoding: str = "utf-8",
+    max_doc_size_mb: float = 200.0,
+):
+    """
+    Stream-chunk a large text file without loading it fully into RAM.
+
+    Yields one chunk (str) at a time. Safe for files of arbitrary size — only
+    a sliding window of `chunk_size + overlap` characters is held in memory
+    at any point.
+
+    Parameters
+    ----------
+    path           : Path to the text file.
+    chunk_size     : Target chunk size in characters.
+    overlap        : Character overlap between consecutive chunks.
+    encoding       : File encoding (default utf-8, errors replaced).
+    max_doc_size_mb: Guard rail — raises ValueError if file exceeds this size.
+                     Set to 0 to disable the check.
+
+    Yields
+    ------
+    str — individual text chunks, each ≤ chunk_size characters (approximately).
+
+    Usage
+    -----
+    for chunk in stream_chunk_file("large.txt", chunk_size=512, overlap=64):
+        process(chunk)
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    file_size_mb = path.stat().st_size / (1024 * 1024)
+    if max_doc_size_mb > 0 and file_size_mb > max_doc_size_mb:
+        raise ValueError(
+            f"File '{path.name}' is {file_size_mb:.1f} MB, which exceeds "
+            f"max_doc_size_mb={max_doc_size_mb}. "
+            f"Split the file or increase max_doc_size_mb in the profile's scale_hints."
+        )
+
+    buffer = ""
+    read_size = chunk_size * 8  # read in larger blocks for I/O efficiency
+
+    with path.open(encoding=encoding, errors="replace") as f:
+        while True:
+            block = f.read(read_size)
+            if not block:
+                break
+            buffer += block
+
+            # Emit full chunks from the buffer, retaining the overlap tail
+            while len(buffer) >= chunk_size:
+                chunk = buffer[:chunk_size].strip()
+                if chunk:
+                    yield chunk
+                # Slide forward, keeping the overlap for context continuity
+                buffer = buffer[chunk_size - overlap:]
+
+    # Emit the remaining tail
+    tail = buffer.strip()
+    if tail:
+        yield tail
+
+
+def estimate_chunk_count(path: str | Path, chunk_size: int = 512, overlap: int = 64) -> int:
+    """
+    Fast estimate of total chunks for a file — used for progress reporting.
+    Does not read the file; estimates from file size.
+
+    Returns 0 if the file does not exist.
+    """
+    path = Path(path)
+    if not path.exists():
+        return 0
+    file_size_bytes = path.stat().st_size
+    effective_step = max(1, chunk_size - overlap)
+    return max(1, int(file_size_bytes / (effective_step * 2.5)))
