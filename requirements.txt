@@ -69,3 +69,10 @@ aiofiles>=23.2.1
 slowapi>=0.1.9          # Per-IP rate limiting middleware for FastAPI
 gunicorn>=22.0.0        # Multi-worker WSGI/ASGI server (used with UvicornWorker)
                         # Usage: .\start.ps1 -Workers 4
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+# RAGAS: LLM-judged RAG quality metrics (faithfulness, answer_relevancy,
+# context_precision, context_recall). Requires LM Studio at localhost:1234.
+# Gracefully disabled when LM Studio is offline.
+ragas>=0.4.0
+langchain-openai>=0.1.0   # LangChain wrapper — bridges LM Studio ↔ RAGAS judge LLM

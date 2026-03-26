@@ -74,6 +74,42 @@ def _score_answer(
     }
 
 
+def _ragas_scores_for(
+    question: str,
+    answer: str,
+    chunks,
+    expected_answer: str,
+) -> Dict[str, Any]:
+    """
+    Compute RAGAS metrics (LLM-judged) for one Q&A pair.
+
+    Returns a dict ready to merge into the per-backend score block.
+    Always returns a dict — keys are None when RAGAS/LM Studio is unavailable.
+    """
+    try:
+        from core.evaluation.ragas_scorer import get_ragas_scorer
+        scorer = get_ragas_scorer()
+        if not scorer.is_available():
+            return {"ragas": None, "ragas_unavailable_reason": "LM Studio offline"}
+
+        contexts = []
+        for chunk in (chunks or []):
+            doc = getattr(chunk, "document", None)
+            text = (getattr(doc, "text", "") if doc else getattr(chunk, "text", "")) or ""
+            if text.strip():
+                contexts.append(text.strip())
+
+        result = scorer.score(
+            question=question,
+            answer=answer,
+            contexts=contexts[:10],  # cap at 10 chunks (RAGAS processes each via LLM)
+            ground_truth=expected_answer,
+        )
+        return {"ragas": result.as_dict()}
+    except Exception as exc:
+        return {"ragas": None, "ragas_error": str(exc)}
+
+
 def _run_evaluate(
     question: str,
     expected_answer: str,
@@ -153,9 +189,16 @@ def _run_evaluate(
                     )
                 ],
             )
+            ragas_block = _ragas_scores_for(
+                question=question,
+                answer=resp.answer,
+                chunks=resp.results or [],
+                expected_answer=expected_answer,
+            )
             per_backend[backend] = {
                 "answer": resp.answer,
                 "scores": scores,
+                **ragas_block,
                 "graph_entities": list(resp.graph_entities or []),
                 "graph_paths": [str(p) for p in (resp.graph_paths or [])],
             }
@@ -300,6 +343,32 @@ async def list_evaluations() -> Dict:
     """Return all stored evaluation IDs."""
     store = get_eval_store()
     return {"eval_ids": list(store.keys())}
+
+
+@router.get("/evaluate/ragas-status")
+async def ragas_status() -> Dict:
+    """
+    Check whether RAGAS scoring is available.
+
+    RAGAS requires LM Studio running at localhost:1234.
+    When unavailable, /api/evaluate still runs with word-overlap scores;
+    the 'ragas' block in each per-backend result will be null.
+
+    Returns:
+        available: bool — true when LM Studio is reachable and RAGAS can score
+        scorer:    str  — ragas version string
+        reason:    str  — why unavailable (if applicable)
+    """
+    from core.evaluation.ragas_scorer import get_ragas_scorer, _ragas_version
+    scorer = get_ragas_scorer()
+    available = scorer.is_available()
+    return {
+        "available": available,
+        "scorer": f"ragas-{_ragas_version()}",
+        "llm": "lm-studio (localhost:1234)",
+        "metrics": ["faithfulness", "answer_relevancy", "context_precision", "context_recall"],
+        "reason": None if available else "LM Studio offline or not reachable at localhost:1234",
+    }
 
 
 # Parameterised route LAST so static paths above take priority
