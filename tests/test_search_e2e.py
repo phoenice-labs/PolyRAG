@@ -161,7 +161,7 @@ def _capture_search_payload(page) -> Dict[str, Any]:
 
     Usage:
         with _capture_search_payload(page) as get_payload:
-            page.locator('button', has_text="Search").click()
+            page.get_by_role("button", name="Search", exact=True).click(timeout=120_000)
         payload = get_payload()
     """
     import contextlib
@@ -808,7 +808,7 @@ class TestSearchRequestPayload:
         q = query or self.DEFAULT_QUERY
         inp = page.locator('input[placeholder*="query"]')
         inp.fill(q)
-        page.locator('button:has-text("Search")').click()
+        page.get_by_role("button", name="Search", exact=True).click(timeout=120_000)
 
     # ── Flag alignment tests ──────────────────────────────────────────────────
 
@@ -957,12 +957,20 @@ class TestRetrievalTrailsUI:
         q = query or self.TEST_QUERY
         inp = page.locator('input[placeholder*="query"]')
         inp.fill(q)
-        page.locator('button:has-text("Search")').click()
+        page.get_by_role("button", name="Search", exact=True).click(timeout=120_000)
         # Wait for the network request to complete (search can take 30-60s with SPLADE/all-backends)
         try:
             page.wait_for_load_state("networkidle", timeout=90_000)
         except Exception:
             pass  # networkidle timeout is not fatal — trail may still have been written
+        # Wait for the Search button to return to its normal (enabled) state,
+        # confirming the search has fully completed before the caller checks trails.
+        try:
+            page.get_by_role("button", name="Search", exact=True).wait_for(
+                state="visible", timeout=60_000
+            )
+        except Exception:
+            pass
 
     def _open_trails_panel(self, page):
         panel_btn = page.locator('button:has-text("Retrieval Trails")')

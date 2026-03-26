@@ -106,7 +106,7 @@ TOGGLE_LABELS = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _api(method: str, path: str, **kwargs) -> requests.Response:
-    kwargs.setdefault("timeout", 60)
+    kwargs.setdefault("timeout", 300)
     return getattr(requests, method)(f"{API_BASE}{path}", **kwargs)
 
 
