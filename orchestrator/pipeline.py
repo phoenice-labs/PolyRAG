@@ -256,11 +256,16 @@ class RAGPipeline:
                 self._graph_store.connect()
 
                 # ── Restore graph from snapshot (persists across restarts) ──
-                _snapshot_path = (
-                    Path(__file__).resolve().parent.parent
-                    / "data" / "graphs"
-                    / f"{self.ingestor.collection_name}.json"
+                _graphs_dir = (
+                    Path(__file__).resolve().parent.parent / "data" / "graphs"
                 )
+                _snapshot_path = _graphs_dir / f"{self.ingestor.collection_name}.json"
+                # Fallback: snapshots created before model-slug scoping lack the suffix
+                if not _snapshot_path.exists():
+                    _base_name = self.ingestor.collection_name.rsplit("_", 1)[0]
+                    _fallback_path = _graphs_dir / f"{_base_name}.json"
+                    if _fallback_path.exists():
+                        _snapshot_path = _fallback_path
                 if _snapshot_path.exists():
                     try:
                         self._load_graph_snapshot(_snapshot_path)
