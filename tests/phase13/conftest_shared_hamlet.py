@@ -518,6 +518,271 @@ class HamletE2ESuite:
                 f"Warm query avg {avg_ms:.0f}ms — too slow (expected <5000ms)"
 
 
+    # ── 12. Cross-Encoder Cache (backend-agnostic, parity with Milvus) ───────
+
+    class TestCrossEncoderCache:
+        """CrossEncoder model must be loaded once and cached as a singleton.
+        This is backend-agnostic: the singleton lives in process memory,
+        not in any vector store. All backends share the same cross-encoder.
+        """
+        BACKEND: str
+        COLLECTION: str
+        CLIENT = None
+
+        def test_cross_encoder_singleton(self):
+            from core.retrieval.multistage import _get_cross_encoder
+            model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+            assert _get_cross_encoder(model) is _get_cross_encoder(model), (
+                "CrossEncoder not cached — new instance returned on each call. "
+                "This causes expensive model reloads per request."
+            )
+
+    # ── 13. Pipeline Cache (backend-scoped, matches Milvus behaviour) ─────
+
+    class TestPipelineCache:
+        """Pipeline cache in api/deps.py — same config → same pipeline object.
+        Each backend must hit the LRU cache on repeated identical requests.
+        """
+        BACKEND: str
+        COLLECTION: str
+        CLIENT = None
+
+        def test_same_config_returns_same_pipeline(self):
+            from api.deps import build_pipeline_config, create_pipeline
+            config = build_pipeline_config(
+                backend=self.BACKEND,
+                collection_name="cache_test_col",
+                enable_rewrite=False, enable_multi_query=False,
+                enable_hyde=False, enable_stepback=False,
+                enable_raptor=False, enable_contextual_rerank=False,
+            )
+            p1 = create_pipeline(config)
+            p2 = create_pipeline(config)
+            assert p1 is p2, (
+                f"{self.BACKEND}: pipeline cache miss — two different pipeline objects "
+                "returned for identical config. Heavy components (embedder, BM25 index) "
+                "are being reloaded on every request."
+            )
+
+    # ── 14. Graph Snapshot Restore (per-backend collection snapshot) ──────
+
+    class TestGraphSnapshotRestore:
+        """Graph snapshot restore — entities available on next startup without re-ingest.
+        Each backend saves its own snapshot at data/graphs/{collection}_minilm.json.
+        All backends must demonstrate snapshot persistence parity with Milvus.
+        """
+        BACKEND: str
+        COLLECTION: str
+        CLIENT = None
+        # Subclasses may override if using a different collection for snapshot checks
+        SNAPSHOT_COLLECTION: str = ""
+
+        def _snap_path(self):
+            import re
+            from pathlib import Path
+            root = Path(__file__).resolve().parent.parent.parent
+            col = self.SNAPSHOT_COLLECTION or self.COLLECTION
+            # Graph snapshots are keyed by the model-scoped collection name (_minilm suffix)
+            scoped = f"{col}_minilm" if not col.endswith("_minilm") else col
+            snap = root / "data" / "graphs" / f"{scoped}.json"
+            if not snap.exists():
+                # Fall back to unscoped name (legacy or custom ingestion)
+                snap_base = root / "data" / "graphs" / f"{col}.json"
+                if snap_base.exists():
+                    return snap_base
+            return snap
+
+        def test_graph_snapshot_file_exists(self):
+            snap = self._snap_path()
+            import pytest
+            if not snap.exists():
+                pytest.skip(
+                    f"{self.BACKEND}: no graph snapshot at {snap} — "
+                    "ingest with enable_er=True first to generate it"
+                )
+            assert snap.exists(), f"{self.BACKEND}: graph snapshot missing at {snap}"
+
+        def test_graph_snapshot_has_nodes(self):
+            import json
+            import pytest
+            snap = self._snap_path()
+            if not snap.exists():
+                pytest.skip(f"{self.BACKEND}: no graph snapshot to inspect")
+            data = json.loads(snap.read_text(encoding="utf-8"))
+            nodes = data.get("nodes", [])
+            assert len(nodes) > 0, (
+                f"{self.BACKEND}: graph snapshot at {snap} contains zero nodes. "
+                "Entity extraction may have failed during ingestion."
+            )
+
+        def test_graph_restore_populates_entity_store(self):
+            """Pipeline start must reload entities from snapshot — entity_count() > 0."""
+            import pytest
+            from api.deps import build_pipeline_config, create_pipeline, _pipeline_cache
+            snap = self._snap_path()
+            if not snap.exists():
+                pytest.skip(f"{self.BACKEND}: no graph snapshot — ingest with enable_er=True first")
+
+            col = self.SNAPSHOT_COLLECTION or self.COLLECTION
+            config = build_pipeline_config(
+                backend=self.BACKEND,
+                collection_name=col,
+                enable_er=True,
+                enable_rewrite=False, enable_multi_query=False,
+                enable_hyde=False, enable_stepback=False,
+                enable_raptor=False, enable_contextual_rerank=False,
+            )
+            # Evict any cached pipeline so _load_graph_snapshot runs fresh
+            keys_to_remove = [k for k in _pipeline_cache if k[0] == self.BACKEND and col in k[1]]
+            for k in keys_to_remove:
+                _pipeline_cache.pop(k, None)
+
+            pipeline = create_pipeline(config)
+            ec = pipeline._graph_store.entity_count() if pipeline._graph_store else 0
+            assert ec > 0, (
+                f"{self.BACKEND}: graph store has 0 entities after pipeline.start(). "
+                f"Snapshot at {snap} was not restored. "
+                "Check orchestrator/pipeline.py _load_graph_snapshot()."
+            )
+
+    # ── 15. Browser Smoke (Playwright — shared across all backends) ───────
+
+    class TestBrowserSmoke:
+        """
+        Playwright smoke tests: open the frontend, do a Hamlet search, check prompts page.
+        These tests are backend-agnostic (the frontend connects to localhost:8000 which
+        serves all backends). All backends get browser coverage parity with Milvus.
+
+        Requires:
+          - API server at localhost:8000 (.\\start.ps1 -Action start)
+          - Frontend at localhost:3000/5173 (npm run dev)
+          - playwright installed: pip install playwright && playwright install chromium
+        """
+        BACKEND: str
+        COLLECTION: str
+        CLIENT = None
+        SEARCH_QUERY: str = _DEFAULT_SEARCH_QUERY
+
+        @staticmethod
+        def _require_browser_server():
+            import pytest
+            try:
+                import requests
+                r = requests.get("http://localhost:8000/api/health", timeout=3)
+                if r.status_code != 200:
+                    pytest.skip("API server not running at localhost:8000")
+            except Exception:
+                pytest.skip("API server not reachable — start with: .\\start.ps1 -Action start")
+            try:
+                import playwright  # noqa: F401
+            except ImportError:
+                pytest.skip("Playwright not installed: pip install playwright && playwright install chromium")
+
+        @staticmethod
+        def _find_frontend_url() -> str:
+            import pytest
+            try:
+                import requests
+            except ImportError:
+                pytest.skip("requests not installed")
+            _MARKERS = ("polyrag", "searchlab", "search lab", "PolyRAG", "SearchLab")
+            for port in (5173, 3000, 3001, 3002, 4173):
+                try:
+                    r = requests.get(f"http://localhost:{port}", timeout=5)
+                    if r.status_code < 500 and any(m.lower() in r.text.lower() for m in _MARKERS):
+                        return f"http://localhost:{port}"
+                except Exception:
+                    pass
+            pytest.skip("No PolyRAG frontend on ports 5173/3000/3001/3002/4173 — run: npm run dev")
+
+        def test_browser_search_lab_loads(self):
+            """Browser can open the SearchLab page."""
+            self._require_browser_server()
+            frontend_url = self._find_frontend_url()
+            import concurrent.futures
+            from playwright.sync_api import sync_playwright
+
+            def _run():
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    page = browser.new_page()
+                    try:
+                        page.goto(f"{frontend_url}/search", timeout=10000)
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                        search_input = page.query_selector("input[placeholder*='query']")
+                        assert search_input is not None, "Search input not found on SearchLab page"
+                    finally:
+                        browser.close()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_run).result(timeout=60)
+
+        def test_browser_search_returns_results(self):
+            """Browser can type the Hamlet query and see result cards rendered."""
+            self._require_browser_server()
+            frontend_url = self._find_frontend_url()
+            import concurrent.futures
+            from playwright.sync_api import sync_playwright
+
+            def _run():
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    page = browser.new_page()
+                    try:
+                        page.goto(f"{frontend_url}/search", timeout=10000)
+                        page.wait_for_load_state("networkidle", timeout=10000)
+
+                        backend_cb = page.query_selector(f"input[value='{self.BACKEND}']")
+                        if backend_cb:
+                            backend_cb.click()
+
+                        coll_input = page.query_selector("input[placeholder*='collection']")
+                        if coll_input:
+                            coll_input.fill(self.COLLECTION)
+
+                        search_input = page.query_selector("input[placeholder*='query']")
+                        assert search_input is not None, "No search input found"
+                        search_input.fill(self.SEARCH_QUERY)
+                        search_input.press("Enter")
+
+                        page.wait_for_selector(
+                            "[data-testid='result-card'], .result-card, .bg-gray-800",
+                            timeout=30000,
+                        )
+                        assert len(page.content()) > 1000, "Page appears empty after search"
+                    finally:
+                        browser.close()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_run).result(timeout=120)
+
+        def test_browser_prompt_editor_page_loads(self):
+            """Browser can navigate to /prompts and see PromptEditor content."""
+            self._require_browser_server()
+            frontend_url = self._find_frontend_url()
+            import concurrent.futures
+            from playwright.sync_api import sync_playwright
+
+            def _run():
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    page = browser.new_page()
+                    try:
+                        page.goto(f"{frontend_url}/prompts", timeout=10000)
+                        page.wait_for_load_state("networkidle", timeout=15000)
+                        content = page.content()
+                        assert (
+                            'href="/prompts"' in content
+                            or "Prompt" in content
+                            or "Query Rewriting" in content
+                        ), "PromptEditor route not registered in frontend"
+                    finally:
+                        browser.close()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_run).result(timeout=60)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Fixture factories
 # ═══════════════════════════════════════════════════════════════════════════

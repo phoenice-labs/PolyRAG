@@ -152,3 +152,30 @@ class TestParallelRetrieval(HamletE2ESuite.TestParallelRetrieval):
     CLIENT = _CLIENT
     SEARCH_QUERY = SEARCH_QUERY
     ALL_METHODS = ALL_METHODS
+
+
+class TestCrossEncoderCache(HamletE2ESuite.TestCrossEncoderCache):
+    BACKEND = BACKEND
+    COLLECTION = COLLECTION
+    CLIENT = _CLIENT
+
+
+class TestPipelineCache(HamletE2ESuite.TestPipelineCache):
+    BACKEND = BACKEND
+    COLLECTION = COLLECTION
+    CLIENT = _CLIENT
+
+
+class TestGraphSnapshotRestore(HamletE2ESuite.TestGraphSnapshotRestore):
+    BACKEND = BACKEND
+    COLLECTION = COLLECTION
+    CLIENT = _CLIENT
+    # Use the per-backend E2E collection for snapshot checks
+    SNAPSHOT_COLLECTION = COLLECTION
+
+
+class TestBrowserSmoke(HamletE2ESuite.TestBrowserSmoke):
+    BACKEND = BACKEND
+    COLLECTION = COLLECTION
+    CLIENT = _CLIENT
+    SEARCH_QUERY = SEARCH_QUERY
