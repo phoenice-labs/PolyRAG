@@ -48,6 +48,40 @@ class ConfidenceThresholds(BaseModel):
     low: float = Field(0.3, ge=0.0, le=1.0, description="Score ≥ this → LOW verdict")
 
 
+# ── Schema: Scale Hints ───────────────────────────────────────────────────────
+
+
+class ScaleHints(BaseModel):
+    """
+    Per-profile operational tuning for ingestion and retrieval volume.
+
+    These settings are passed through to the ingestion pipeline and streaming chunker.
+    They do NOT affect retrieval quality — only throughput, memory usage, and durability.
+
+    Usage:
+      - Increase ``embed_batch_size`` on machines with more RAM for faster ingestion.
+      - Decrease ``max_doc_size_mb`` to enforce strict document size limits for your use case.
+      - Set ``bm25_persist=true`` to snapshot the BM25 index after warm-start (faster restarts).
+    """
+
+    embed_batch_size: int = Field(
+        32, ge=1, le=512,
+        description="Number of chunks embedded per batch during ingestion (higher = faster, more RAM)",
+    )
+    max_doc_size_mb: float = Field(
+        200.0, gt=0,
+        description="Maximum allowed document size in MB. Larger files raise a 400 error.",
+    )
+    bm25_persist: bool = Field(
+        True,
+        description="If true, snapshot the BM25 index to disk after warm-start for faster restarts.",
+    )
+    max_concurrent_requests: int = Field(
+        5, ge=1, le=100,
+        description="Soft concurrency hint — used for documentation; enforcement via rate limiting.",
+    )
+
+
 # ── Schema: RAG Profile ───────────────────────────────────────────────────────
 
 
@@ -89,6 +123,12 @@ class RagProfile(BaseModel):
     confidence_thresholds: ConfidenceThresholds = Field(
         default_factory=ConfidenceThresholds,
         description="Score boundaries for HIGH / MEDIUM / LOW / INSUFFICIENT verdict",
+    )
+
+    # ── Scale hints (operational tuning, does not affect retrieval quality) ───
+    scale_hints: ScaleHints = Field(
+        default_factory=ScaleHints,
+        description="Ingestion throughput and durability tuning for this profile",
     )
 
 

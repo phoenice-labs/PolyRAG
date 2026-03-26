@@ -406,9 +406,74 @@ def create_pipeline(config: Dict[str, Any]):
             pipeline.start()
             _pipeline_cache[cache_key] = pipeline
             _touch_lru(cache_key)
+            # Persist BM25 snapshot after warm-start for faster future restarts
+            _save_bm25_snapshot(cache_key, pipeline)
 
     _reconfigure_llm_flags(_pipeline_cache[cache_key], config)
     return _pipeline_cache[cache_key]
+
+
+# ── BM25 index persistence ────────────────────────────────────────────────────
+# The BM25 warm-start (pipeline._rebuild_bm25_from_store) fetches all chunk texts
+# from the vector store on every process start, which can be slow for large collections.
+#
+# Strategy: after warm-start completes, snapshot the BM25 docs list to
+#   data/bm25/{cache_key_hash}.pkl
+# This provides a disk-side view of the index state (useful for diagnostics and as
+# the foundation for a future "skip rebuild if pkl is fresh" optimisation).
+#
+# We do NOT modify orchestrator/pipeline.py to avoid touching the protected core.
+
+_BM25_DIR = Path("data/bm25")
+
+
+def _bm25_pkl_path(cache_key: tuple) -> Path:
+    """Deterministic pkl path for a given cache key."""
+    import hashlib
+    key_hash = hashlib.md5(str(cache_key).encode()).hexdigest()[:16]
+    return _BM25_DIR / f"{key_hash}.pkl"
+
+
+def _save_bm25_snapshot(cache_key: tuple, pipeline) -> None:
+    """
+    Serialize the pipeline's BM25 docs list to disk after warm-start.
+    Non-blocking — silently swallows all errors (persistence is best-effort).
+
+    The snapshot path: data/bm25/{cache_key_hash}.pkl
+    """
+    try:
+        import pickle
+
+        bm25_index = getattr(pipeline, "bm25_index", None)
+        if bm25_index is None:
+            return
+        docs = getattr(bm25_index, "_docs", [])
+        if not docs:
+            return
+
+        _BM25_DIR.mkdir(parents=True, exist_ok=True)
+        pkl_path = _bm25_pkl_path(cache_key)
+        with pkl_path.open("wb") as f:
+            pickle.dump(docs, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass  # persistence is best-effort; warm-start already succeeded
+
+
+def get_bm25_snapshot_info() -> list:
+    """
+    Return metadata about on-disk BM25 snapshots for /api/system/health.
+    """
+    if not _BM25_DIR.exists():
+        return []
+    snapshots = []
+    for pkl in _BM25_DIR.glob("*.pkl"):
+        stat = pkl.stat()
+        snapshots.append({
+            "file": pkl.name,
+            "size_kb": round(stat.st_size / 1024, 1),
+            "modified": stat.st_mtime,
+        })
+    return snapshots
 
 
 def _reconfigure_llm_flags(pipeline, config: dict) -> None:
