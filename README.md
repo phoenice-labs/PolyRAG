@@ -372,6 +372,129 @@ services:
 
 ---
 
+## Scalability & Production Readiness
+
+Six hardening fixes shipped across three PRs, all living behind the existing API surface — zero breaking changes.
+
+| Fix | What Changed | Where |
+|-----|-------------|-------|
+| **Async `/api/rag`** | Unified agentic endpoint — full traceability in one call | `api/routers/rag.py` |
+| **Rate limiting** | `429 Too Many Requests` at configurable RPS cap | `api/main.py` |
+| **LRU pipeline cache** | Max 10 cached pipelines; LRU eviction calls `pipeline.stop()` | `api/deps.py` |
+| **Streaming chunker** | `stream_chunk_file()` generator — O(chunk_size) RAM regardless of file size | `core/ingestion/loader.py` |
+| **Persistent job store** | `data/jobs.jsonl` write-through; survives API restart | `api/jobs.py` |
+| **ScaleHints on RagProfile** | Per-profile: `embed_batch_size`, `max_doc_size_mb`, `bm25_persist`, `max_concurrent_requests` | `api/routers/rag.py` |
+| **BM25 persistence** | Serialises `bm25_index._docs` to `data/bm25/<md5>.pkl` after warm-up | `api/deps.py` |
+| **System endpoints** | `/api/system/health`, `/api/system/cache` (GET + DELETE) | `api/routers/system.py` |
+
+### Unified Agentic RAG endpoint
+
+The `/api/rag` endpoint is the single integration point for agentic AI flows:
+
+```http
+POST /api/rag
+Content-Type: application/json
+
+{
+  "profile_id": "my-profile",   # optional — omit to use inline config
+  "question": "What does Hamlet say about mortality?",
+  "collection_name": "my_docs",
+  "backend": "chromadb",
+  "embedding_model": "all-MiniLM-L6-v2",
+  "methods": {
+    "enable_dense": true,
+    "enable_bm25": true,
+    "enable_graph": true,
+    "enable_rerank": true,
+    "enable_mmr": true,
+    "enable_splade": false,
+    "enable_rewrite": false,
+    "enable_multi_query": false,
+    "enable_hyde": false,
+    "enable_raptor": false,
+    "enable_contextual_rerank": false,
+    "enable_llm_graph": false
+  },
+  "top_k": 5
+}
+```
+
+Response includes full traceability:
+
+```json
+{
+  "answer": "...",
+  "confidence": { "verdict": "HIGH", "composite_score": 0.83, "signals": {...} },
+  "citations": ["Document A, chunk 3 (chars 120–450)"],
+  "provenance": [{"doc_id": "...", "source": "...", "span_start": 120, "span_end": 450}],
+  "results": [
+    {
+      "score": 0.91,
+      "text": "...",
+      "metadata": {
+        "source": "my_doc.pdf",
+        "chunk_strategy": "sentence_boundary",
+        "classification": "INTERNAL",
+        "_method_lineage": ["Dense Vector", "BM25 Keyword", "Knowledge Graph"]
+      }
+    }
+  ],
+  "graph_entities": ["PERSON:Hamlet", "PERSON:Horatio"],
+  "graph_paths": ["Hamlet —[speaks_to]→ Horatio"],
+  "traces": [...]
+}
+```
+
+### Load Testing
+
+```powershell
+# Requires API running on port 8000
+.\scripts\load-test.ps1                          # headless, 50 users, 60 s
+.\scripts\load-test.ps1 -Users 100 -Duration 120 # custom
+.\scripts\load-test.ps1 -UI                      # opens browser dashboard
+.\scripts\load-test.ps1 -Report ./reports/run1.html
+```
+
+Pass/fail thresholds (checked at exit): p50 < 2 s, p95 < 5 s, error rate < 1 %.
+
+### RAGAS Evaluation (PR #5 — pending merge)
+
+When merged, every `/api/evaluate` response will include LLM-judged RAGAS metrics alongside word-overlap scores:
+
+```json
+"ragas": {
+  "faithfulness": 0.95,
+  "answer_relevancy": 0.88,
+  "context_precision": 0.75,
+  "context_recall": 0.80
+}
+```
+
+Check availability before running: `GET /api/evaluate/ragas-status`.
+Requires LM Studio running on port 1234. Gracefully returns `null` when offline.
+
+---
+
+## CI / CD
+
+GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every PR to `main`:
+
+| Job | What it checks |
+|-----|---------------|
+| `Tests (Python 3.10)` | Fast test subset + `tests/phase13/test_rag_router.py` (28 tests) |
+| `Tests (Python 3.11)` | Same matrix leg on Python 3.11 |
+| `Import sanity check` | All routers importable; no circular dependency |
+
+```bash
+# Reproduce CI locally
+pytest tests/ -m "not integration and not lmstudio and not browser" --timeout=300
+pytest tests/phase13/test_rag_router.py -v
+```
+
+Recommended branch protection: **Settings → Branches → Require status checks** → select all three jobs above.
+
+---
+
 ## Backlog & Roadmap
 
 See [BACKLOG.md](./BACKLOG.md) for the full 11-phase development plan with
@@ -477,17 +600,22 @@ Browser (React 19 + Vite 5 + TypeScript)
         ↕  HTTP REST + Server-Sent Events (port 8000)
 
 FastAPI + uvicorn  (api/ directory)
-  ├── POST /api/ingest          → start batch ingestion job(s)
-  ├── GET  /api/ingest/{id}/stream  → SSE live chunking/embedding logs
-  ├── POST /api/search          → multi-backend query with retrieval trace
-  ├── POST /api/compare         → full comparison matrix
-  ├── GET  /api/backends        → health + ping for all 6 backends
-  ├── GET  /api/collections     → collection CRUD
-  ├── GET  /api/graph/{coll}    → entity/relation nodes for D3
-  ├── POST /api/evaluate        → ground-truth scoring (faithfulness / relevance / recall)
-  ├── POST /api/feedback        → relevance thumbs up/down
-  ├── POST /api/chunks/preview  → dry-run chunking (no ingest)
-  └── GET  /api/jobs            → job history + status
+  ├── POST /api/rag                    → unified agentic endpoint (answer + full traceability)
+  ├── GET/POST/PUT/DELETE /api/rag/profiles → named config profiles (persist tested settings)
+  ├── POST /api/ingest                 → start batch ingestion job(s)
+  ├── GET  /api/ingest/{id}/stream     → SSE live chunking/embedding logs
+  ├── POST /api/search                 → multi-backend query with retrieval trace
+  ├── POST /api/compare                → full comparison matrix
+  ├── GET  /api/backends               → health + ping for all 6 backends
+  ├── GET  /api/collections            → collection CRUD
+  ├── GET  /api/graph/{coll}           → entity/relation nodes for D3
+  ├── POST /api/evaluate               → ground-truth scoring (faithfulness / relevance / recall)
+  ├── GET  /api/evaluate/ragas-status  → RAGAS availability check (LM Studio)
+  ├── POST /api/feedback               → relevance thumbs up/down
+  ├── POST /api/chunks/preview         → dry-run chunking (no ingest)
+  ├── GET  /api/jobs                   → job history + status
+  ├── GET  /api/system/health          → uptime, pipeline cache, job counts
+  └── GET/DELETE /api/system/cache     → inspect / flush LRU pipeline cache
 
         ↕  Python import (zero changes to existing code)
 

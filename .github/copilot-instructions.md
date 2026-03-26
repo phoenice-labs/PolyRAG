@@ -2,7 +2,7 @@
 
 > **Auto-loaded by GitHub Copilot CLI on every session.**
 > Keep this file updated when adding phases, endpoints, or major config changes.
-> Last updated: 2026-03-20 — SPLADE sparse neural retrieval (Phase 3b) + multi-encoder support (BGE-base, BGE-large)
+> Last updated: 2026-03-20 — Scalability PRs #1–#3 (LRU cache, streaming chunker, persistent jobs, rate limiting, system endpoints, ScaleHints, BM25 persistence) + CI (PR #4) + RAGAS (PR #5, pending) + Load test (PR #6)
 
 ---
 
@@ -11,7 +11,7 @@
 | Field | Value |
 |-------|-------|
 | **Name** | Phoenice-PolyRAG |
-| **Version** | 0.1.0 |
+| **Version** | 14.2.0 |
 | **Type** | Full-stack RAG framework (FastAPI + React + 11-phase Python pipeline) |
 | **Tagline** | "Write your RAG orchestration once. Run it on any vector store." |
 | **Python** | 3.10+ |
@@ -34,6 +34,9 @@
 - **Knowledge graph**: spaCy (NER), Kuzu (embedded), Neo4j (optional)
 - **LLM client**: OpenAI SDK → LM Studio at `localhost:1234` (optional; graceful degradation)
 - **Reranking**: cross-encoder, MMR, RAPTOR hierarchical
+- **Quality evaluation**: RAGAS 0.4.x (LLM-judged: faithfulness, answer_relevancy, context_precision, context_recall) — PR #5, pending merge
+- **Load testing**: Locust 2.24+ (`tests/load/locustfile.py`, `scripts/load-test.ps1`)
+- **CI**: GitHub Actions (`.github/workflows/ci.yml`) — Python 3.10 + 3.11 matrix, CPU-only PyTorch
 - **Testing**: pytest 8.0+, pytest-asyncio, httpx
 
 ### Frontend (React/TypeScript)
@@ -52,8 +55,8 @@
 Phoenice-PolyRAG/
 ├── core/                    ← All 11 phase modules (pluggable, reusable)
 │   ├── store/               ← VectorStoreBase + 6 adapters (Phase 1)
-│   ├── embedding/           ← SentenceTransformerProvider
-│   ├── ingestion/           ← Chunk → embed → upsert pipeline
+│   ├── embedding/           ← SentenceTransformerProvider (MiniLM, BGE-base, BGE-large)
+│   ├── ingestion/           ← Chunk → embed → upsert; stream_chunk_file() for large docs
 │   ├── chunking/            ← Fixed, sentence-boundary, semantic (Phase 2)
 │   ├── retrieval/           ← Hybrid, SPLADE, multistage, RAPTOR, MMR, contextual reranker (Phase 3,3b,4,11)
 │   │   ├── hybrid.py        ← HybridRetriever (3-way: Dense+SPLADE+BM25), HybridFuser (RRF)
@@ -67,6 +70,7 @@ Phoenice-PolyRAG/
 │   ├── temporal/            ← Lifecycle filters, RBAC, access policies (Phase 8)
 │   ├── noise/               ← Dedup, quality scoring, observability (Phase 9)
 │   ├── classification/      ← Data classification & access control
+│   ├── evaluation/          ← RagasScorer, RagasResult (PR #5 — pending merge)
 │   └── observability/       ← Structured logging, metrics
 │
 ├── orchestrator/
@@ -74,11 +78,17 @@ Phoenice-PolyRAG/
 │   ├── response.py          ← RAGResponse envelope (answer + citations + graph)
 │   └── prompt_registry.py  ← LLM prompt templates
 │
-├── api/                     ← FastAPI REST server (port 8000)
-│   ├── main.py              ← App entry, health check, CORS, startup events
-│   ├── routers/             ← 11 endpoint modules (see API Routes section)
-│   ├── deps.py              ← Shared deps, pipeline factory
-│   ├── jobs.py              ← Async job queue (JobStore)
+├── api/                     ← FastAPI REST server (port 8000, v14.2.0)
+│   ├── main.py              ← App entry, health check, CORS, rate limiting, startup events
+│   ├── routers/
+│   │   ├── rag.py           ← Unified agentic endpoint + RagProfile CRUD + ScaleHints
+│   │   ├── system.py        ← /api/system/health, /api/system/cache (LRU inspect/flush)
+│   │   ├── search.py        ← Multi-backend parallel search
+│   │   ├── ingest.py        ← Background ingestion + SSE streaming
+│   │   ├── evaluate.py      ← Quality metrics (F/R/S/G + RAGAS when PR #5 merged)
+│   │   └── ...              ← Other routers (see API Routes section)
+│   ├── deps.py              ← Pipeline factory, LRU cache, BM25 persistence helpers
+│   ├── jobs.py              ← Async job queue (write-through to data/jobs.jsonl)
 │   └── schemas.py           ← Pydantic request/response models
 │
 ├── frontend/                ← React 19 SPA (port 3000, Vite)
@@ -95,7 +105,9 @@ Phoenice-PolyRAG/
 ├── data/                    ← Runtime data (safe to delete & regenerate)
 │   ├── chromadb/            ← ChromaDB persistence
 │   ├── faiss/               ← FAISS index files
-│   ├── splade/              ← SPLADE pre-encoded sparse vectors (per collection: docs.json + vectors.npz)
+│   ├── splade/              ← SPLADE pre-encoded sparse vectors (per collection)
+│   ├── bm25/                ← BM25 index pkl snapshots (data/bm25/<md5>.pkl)
+│   ├── jobs.jsonl           ← Persistent job store (write-through, survives restart)
 │   ├── graph.kuzu           ← Kuzu embedded graph DB
 │   ├── ingestion_audit.jsonl
 │   ├── retrieval_trails.jsonl
@@ -103,31 +115,45 @@ Phoenice-PolyRAG/
 │
 ├── tests/
 │   ├── phase1/ … phase11/   ← Phase-specific test suites
+│   ├── phase13/             ← API integration tests (28 tests incl. RAG router)
+│   ├── load/                ← Locust load test (locustfile.py)
 │   ├── test_pipeline_e2e.py ← End-to-end integration test
 │   └── conftest.py
 │
 ├── scripts/
-│   └── compare_backends.py  ← Benchmark all 6 vector store backends
+│   ├── compare_backends.py  ← Benchmark all 6 vector store backends
+│   └── load-test.ps1        ← PowerShell Locust runner (pre-flight checks, report output)
 │
 ├── .github/
+│   ├── workflows/
+│   │   └── ci.yml           ← GitHub Actions CI (Python 3.10+3.11, fast pytest, lint)
 │   └── copilot-instructions.md  ← THIS FILE (workspace context)
 │
 ├── install.ps1              ← Windows setup script
-├── start.ps1                ← Windows service manager
+├── start.ps1                ← Windows service manager (multi-worker aware)
 ├── docker-compose.polyrag.yml ← Docker: Qdrant, Weaviate, Milvus, PGVector
 ├── pyproject.toml           ← Python package metadata
-├── requirements.txt         ← Python dependencies (59 packages)
+├── requirements.txt         ← Python dependencies
 ├── pytest.ini               ← Test markers (integration, lmstudio, browser)
 └── BACKLOG.md               ← Phase backlog
 ```
 
 ---
 
-## API Routes (FastAPI, port 8000)
+## API Routes (FastAPI, port 8000, v14.2.0)
 
 | Method | Path | Router | Purpose |
 |--------|------|--------|---------|
 | GET | `/api/health` | `main.py` | Health check |
+| POST | `/api/rag` | `routers/rag.py` | **Unified agentic endpoint** — answer + full traceability |
+| GET | `/api/rag/profiles` | `routers/rag.py` | List named RagProfiles |
+| POST | `/api/rag/profiles` | `routers/rag.py` | Create a RagProfile |
+| GET | `/api/rag/profiles/{id}` | `routers/rag.py` | Get a RagProfile |
+| PUT | `/api/rag/profiles/{id}` | `routers/rag.py` | Update a RagProfile |
+| DELETE | `/api/rag/profiles/{id}` | `routers/rag.py` | Delete a RagProfile |
+| GET | `/api/system/health` | `routers/system.py` | Uptime, pipeline cache %, job counts |
+| GET | `/api/system/cache` | `routers/system.py` | Inspect LRU pipeline cache entries |
+| DELETE | `/api/system/cache` | `routers/system.py` | Flush all cached pipelines |
 | POST | `/api/ingest` | `routers/ingest.py` | Ingest documents (background + SSE) |
 | GET | `/api/jobs/{id}/status` | `routers/jobs.py` | Async ingest job status |
 | POST | `/api/search` | `routers/search.py` | Multi-backend parallel search |
@@ -138,6 +164,7 @@ Phoenice-PolyRAG/
 | GET | `/api/evaluate/{eval_id}` | `routers/evaluate.py` | Fetch stored evaluation results |
 | GET | `/api/evaluate/browse-chunks` | `routers/evaluate.py` | Browse chunks for Q&A generation |
 | POST | `/api/evaluate/generate-qa` | `routers/evaluate.py` | Auto-generate Q&A from a chunk |
+| GET | `/api/evaluate/ragas-status` | `routers/evaluate.py` | RAGAS LLM availability (PR #5 pending) |
 | POST | `/api/feedback` | `routers/feedback.py` | User annotations |
 | POST | `/api/compare` | `routers/compare.py` | A/B backend comparison (latency, graph A/B, chunk previews) |
 | GET | `/api/compare/sample-queries` | `routers/compare.py` | Ready-to-use benchmark queries |
@@ -288,8 +315,11 @@ docker compose -f docker-compose.polyrag.yml up -d   # Server backends
 
 ### Testing
 ```powershell
-# Fast (no external services)
-pytest tests/ -v -m "not integration and not lmstudio"
+# Fast (no external services) — mirrors CI
+pytest tests/ -v -m "not integration and not lmstudio and not browser" --timeout=300
+
+# API safety tests (28 tests — always run before committing)
+pytest tests/phase13/test_rag_router.py -v
 
 # With LM Studio running
 pytest tests/ -v -m "not integration"
@@ -300,6 +330,14 @@ pytest tests/phase10/ -v
 
 # E2E
 pytest tests/test_pipeline_e2e.py -v
+```
+
+### Load Testing (requires API running)
+```powershell
+.\scripts\load-test.ps1                          # headless, 50 users, 60 s
+.\scripts\load-test.ps1 -Users 100 -Duration 120 # custom scale
+.\scripts\load-test.ps1 -UI                      # browser dashboard
+.\scripts\load-test.ps1 -Report .\reports\run.html
 ```
 
 ### Python API Usage
@@ -329,6 +367,8 @@ python scripts/compare_backends.py   # Benchmark all 6 vector stores
 | ChromaDB | `data/chromadb/` | Chroma DB | ✅ Yes |
 | FAISS | `data/faiss/` | Binary index | ✅ Yes |
 | SPLADE vectors | `data/splade/` | CSR numpy npz + docs.json | ✅ Yes (re-encodes on ingest) |
+| BM25 snapshots | `data/bm25/` | pickle (`<md5>.pkl`) | ✅ Yes (re-serialised after warm-up) |
+| Persistent jobs | `data/jobs.jsonl` | JSON Lines (write-through) | ✅ Yes (or delete to clear history) |
 | Kuzu graph | `data/graph.kuzu` | Kuzu DB | ✅ Yes |
 | Ingestion audit | `data/ingestion_audit.jsonl` | JSON Lines | ✅ Yes |
 | Retrieval trails | `data/retrieval_trails.jsonl` | JSON Lines | ✅ Yes |
@@ -340,10 +380,12 @@ All `data/` contents can be safely deleted; re-ingestion rebuilds them.
 
 ## Test Suite
 
-- **Total**: 20 tests across 11 phases + E2E
-- **Passing**: All (1 skipped for LM Studio auto-skip)
+- **Phase tests**: 368 tests across 11 phases + E2E — all passing (1 skipped for LM Studio auto-skip)
+- **API safety tests**: 28 tests in `tests/phase13/test_rag_router.py` — run before every commit
+- **Load tests**: `tests/load/locustfile.py` — 5 weighted scenarios; run manually via `scripts/load-test.ps1`
+- **CI**: GitHub Actions on every PR — Python 3.10 + 3.11 matrix, fast subset, import sanity
 - **Markers** (`pytest.ini`): `integration`, `lmstudio`, `browser`
-- **Fast subset** (no external services): `-m "not integration and not lmstudio"`
+- **Fast subset** (no external services): `-m "not integration and not lmstudio and not browser"`
 
 ---
 
@@ -351,15 +393,19 @@ All `data/` contents can be safely deleted; re-ingestion rebuilds them.
 
 1. **Single config file** (`config/config.yaml`) drives all phases — no scattered env vars
 2. **Adapter pattern** for vector stores — `VectorStoreBase` interface, swap backend by changing 1 line
-3. **Graceful degradation** — LM Studio, Neo4j, server backends, SPLADE all optional
+3. **Graceful degradation** — LM Studio, Neo4j, server backends, SPLADE, RAGAS all optional
 4. **No GPU required** — all embeddings run on CPU (MiniLM, BGE-base, BGE-large, SPLADE `naver/splade-v3`)
-5. **Background ingestion** — POST `/api/ingest` returns a job ID; SSE streams progress
+5. **Background ingestion** — POST `/api/ingest` returns a job ID; SSE streams progress; jobs persisted to `data/jobs.jsonl`
 6. **All data regenerable** — `data/` directory can be wiped and rebuilt
-7. **Evaluate uses `ask_with_bundle()`** — calls `expand_query()` once then `ask_with_bundle()` per backend (supports retrieval method flags); plain `pipeline.ask()` does NOT accept those flags
-8. **Knowledge Graph is supplementary, not a 7th backend** — Graph retrieval is a signal in 3-way RRF (Dense + BM25 + Graph). It depends on the vector store for ingestion and cannot be evaluated as an independent backend. Use Graph A/B toggle in Compare instead.
-9. **Score identity across backends** — All 6 backends use the same embedding model → identical RRF scores. Query latency is the only genuine differentiator in Compare.
-10. **SPLADE pipeline cache key** — `retrieval.splade.enabled` is part of the pipeline cache key in `deps.py`. Toggling SPLADE from the frontend creates a new pipeline instance (with SPLADE index initialized). Toggle is per-query via `enable_splade` in `RetrievalMethods`.
-11. **Encoder isolation via collection suffix** — `build_pipeline_config(embedding_model=...)` calls `_model_slug()` and appends it to `collection_name` (e.g. `polyrag_docs_bge-base`). Different-dimension models **never share a collection**. `embedding_model` is also in the pipeline cache key so different encoders never share a pipeline instance.
+7. **LRU pipeline cache** — max 10 cached pipelines; eviction calls `pipeline.stop()` for clean resource release; BM25 index pkl saved after warm-up
+8. **Unified agentic endpoint** — `POST /api/rag` accepts a profile ID or inline config; returns answer + confidence + citations + provenance + graph paths in one call
+9. **Evaluate uses `ask_with_bundle()`** — calls `expand_query()` once then `ask_with_bundle()` per backend (supports retrieval method flags); plain `pipeline.ask()` does NOT accept those flags
+10. **Knowledge Graph is supplementary, not a 7th backend** — Graph retrieval is a signal in 3-way RRF (Dense + BM25 + Graph). It depends on the vector store for ingestion and cannot be evaluated as an independent backend. Use Graph A/B toggle in Compare instead.
+11. **Score identity across backends** — All 6 backends use the same embedding model → identical RRF scores. Query latency is the only genuine differentiator in Compare.
+12. **SPLADE pipeline cache key** — `retrieval.splade.enabled` is part of the pipeline cache key in `deps.py`. Toggling SPLADE from the frontend creates a new pipeline instance (with SPLADE index initialized). Toggle is per-query via `enable_splade` in `RetrievalMethods`.
+13. **Encoder isolation via collection suffix** — `build_pipeline_config(embedding_model=...)` calls `_model_slug()` and appends it to `collection_name` (e.g. `polyrag_docs_bge-base`). Different-dimension models **never share a collection**. `embedding_model` is also in the pipeline cache key so different encoders never share a pipeline instance.
+14. **Rate limiting** — `api/main.py` caps incoming request rate; returns HTTP 429 (load test treats this as success, not error)
+15. **ScaleHints on RagProfile** — `embed_batch_size`, `max_doc_size_mb`, `bm25_persist`, `max_concurrent_requests` — all backward-compatible (defaults match prior behavior)
 
 ---
 
@@ -485,6 +531,19 @@ EvaluateRequest:
 - All UI/API enhancements extract data already returned by the pipeline
 - The pipeline is the stable, tested foundation — changes risk breaking all 11 phases
 - Exception: SPLADE-related additions in `core/retrieval/splade.py` and `core/retrieval/hybrid.py` are the pattern for adding new retrieval signals
+- Run `pytest tests/phase13/test_rag_router.py -v` (28 tests) before any commit to verify the API layer is intact
+
+### Open PRs (do not merge out of order)
+| PR | Branch | Covers |
+|----|--------|--------|
+| #1 | `feature/scalability-phase1` | Async /api/rag, rate limiting, multi-worker |
+| #2 | `feature/scalability-phase2` | LRU cache, streaming chunker, persistent jobs |
+| #3 | `feature/scalability-phase3` | System endpoints, ScaleHints, BM25 persistence |
+| #4 | `feature/ci-pipeline` | GitHub Actions CI (merge first — unlocks branch protection) |
+| #5 | `feature/ragas-eval` | RAGAS integration (LLM-judged metrics) |
+| #6 | `feature/load-test` | Locust load test + PowerShell runner |
+
+Recommended merge order: **#4 → #1 → #2 → #3 → #5 → #6**
 
 ---
 
@@ -499,3 +558,5 @@ When making significant changes, update the relevant section(s) of this file:
 - New frontend screen or feature → update **Frontend Screens**
 - New schema field → update **Key Schema Types**
 - New critical constraint → update **Critical Implementation Notes**
+- New data file → update **Data Storage**
+- New PR → update **Open PRs** table
