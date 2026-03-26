@@ -157,9 +157,10 @@ def _run_backend_compare(
                     ]
                     chunk_previews.append(CompareChunkPreview(
                         chunk_id=str(r.document.id),
-                        text=(r.document.text or "")[:300],
+                        text=r.document.text or "",
                         score=float(r.score),
                         method_lineage=lineage,
+                        metadata={k: v for k, v in (r.document.metadata or {}).items() if not k.startswith("_")},
                     ))
                 chunk_ids = [str(r.document.id) for r in (resp_base.results or [])]
 

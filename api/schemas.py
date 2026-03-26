@@ -247,6 +247,7 @@ class CompareChunkPreview(BaseModel):
     text: str
     score: float
     method_lineage: List[MethodContribution] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CompareBackendResult(BaseModel):

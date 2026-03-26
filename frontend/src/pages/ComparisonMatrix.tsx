@@ -297,7 +297,7 @@ function ChunkPreviewPanel({ chunks, backend, query, graphEntities, graphPaths, 
               {(methodContributions || chunks.some(c => c.method_lineage?.length)) && (
                 <RetrievalTrace
                   methodContributions={methodContributions}
-                  chunks={chunks.map(c => ({ chunk_id: c.chunk_id, text: c.text, score: c.score, method_lineage: c.method_lineage }))}
+                  chunks={chunks.map(c => ({ chunk_id: c.chunk_id, text: c.text, score: c.score, method_lineage: c.method_lineage, metadata: c.metadata }))}
                   label={`Method Traceability — ${backend}`}
                 />
               )}

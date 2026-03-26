@@ -20,6 +20,7 @@ export interface CompareChunkPreview {
   text: string
   score: number
   method_lineage?: MethodContribution[]
+  metadata?: Record<string, unknown>
 }
 
 export interface CompareRow {

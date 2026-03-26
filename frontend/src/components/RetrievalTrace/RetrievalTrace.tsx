@@ -22,6 +22,7 @@ export interface TracedChunk {
   text: string
   score: number
   method_lineage?: MethodContribution[]
+  metadata?: Record<string, unknown>
 }
 
 interface RetrievalTraceProps {
@@ -65,6 +66,15 @@ export default function RetrievalTrace({
 }: RetrievalTraceProps) {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('contributions')
+  const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set())
+
+  function toggleChunk(id: string) {
+    setExpandedChunks(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
 
   const hasSteps = steps.length > 0
   const hasContribs = Object.keys(methodContributions).length > 0
@@ -165,37 +175,148 @@ export default function RetrievalTrace({
 
             {/* ── Per-Chunk Attribution tab ─────────────────────────────── */}
             {tab === 'chunks' && hasChunks && (
-              <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+              <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
                 <p className="text-xs text-gray-500 mb-2">
-                  For each retrieved chunk, the badges show which retrieval methods surfaced it and their RRF contributions.
+                  Each card shows the full retrieved chunk text, its RRF score, source metadata,
+                  and which retrieval methods surfaced it. Click a card to expand/collapse.
                 </p>
-                {chunks.slice(0, 15).map((chunk, i) => (
-                  <div key={chunk.chunk_id} className="border border-gray-700 rounded p-2">
-                    <div className="flex items-start justify-between mb-1">
-                      <span className="text-xs text-gray-500">#{i + 1} · score {chunk.score.toFixed(4)}</span>
-                      <div className="flex flex-wrap gap-1 justify-end max-w-[60%]">
-                        {(chunk.method_lineage ?? []).map(m => (
-                          <span
-                            key={m.method}
-                            className="text-xs px-1.5 py-0.5 rounded font-medium"
-                            style={{
-                              backgroundColor: `${getMethodColor(m.method)}22`,
-                              color: getMethodColor(m.method),
-                              border: `1px solid ${getMethodColor(m.method)}44`,
-                            }}
-                            title={`Rank: ${m.rank} · RRF contribution: ${m.rrf_contribution.toFixed(5)}`}
-                          >
-                            {m.method.replace(' Vector', '').replace(' Keyword', '').replace(' Sparse Neural', '')} #{m.rank}
-                          </span>
-                        ))}
-                      </div>
+                {chunks.map((chunk, i) => {
+                  const isExpanded = expandedChunks.has(chunk.chunk_id)
+                  const src = chunk.metadata?.source as string | undefined
+                  const section = chunk.metadata?.section_title as string | undefined
+                  const page = chunk.metadata?.page as number | undefined
+                  // Highlight words that appear in the answer
+                  const answerWordSet = new Set(answer.toLowerCase().split(/\W+/).filter(w => w.length > 3))
+                  const chunkWords = chunk.text.split(/(\W+)/)
+                  return (
+                    <div
+                      key={chunk.chunk_id}
+                      className="border border-gray-700 rounded-lg overflow-hidden"
+                    >
+                      {/* Card header — always visible */}
+                      <button
+                        onClick={() => toggleChunk(chunk.chunk_id)}
+                        className="w-full flex items-start justify-between p-3 text-left hover:bg-gray-800 transition-colors"
+                      >
+                        <div className="flex flex-col gap-1 flex-1 min-w-0">
+                          {/* Rank + score */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-white bg-gray-700 rounded px-1.5 py-0.5">
+                              #{i + 1}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              RRF score: <span className="text-white font-mono">{chunk.score.toFixed(5)}</span>
+                            </span>
+                            {src && (
+                              <span className="text-xs text-gray-500 truncate max-w-[200px]" title={src}>
+                                📄 {src.split('/').pop()}
+                              </span>
+                            )}
+                            {section && (
+                              <span className="text-xs text-gray-500 italic truncate max-w-[180px]" title={section}>
+                                § {section}
+                              </span>
+                            )}
+                            {page != null && (
+                              <span className="text-xs text-gray-500">p.{page}</span>
+                            )}
+                          </div>
+                          {/* Method badges */}
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {(chunk.method_lineage ?? []).map(m => (
+                              <span
+                                key={m.method}
+                                className="text-xs px-1.5 py-0.5 rounded font-medium"
+                                style={{
+                                  backgroundColor: `${getMethodColor(m.method)}22`,
+                                  color: getMethodColor(m.method),
+                                  border: `1px solid ${getMethodColor(m.method)}55`,
+                                }}
+                                title={`Rank assigned by this method: ${m.rank} · RRF term: 1/(60+${m.rank}) = ${m.rrf_contribution.toFixed(5)}`}
+                              >
+                                {m.method.replace(' Vector', '').replace(' Keyword', '').replace(' Sparse Neural', '')}
+                                <span className="opacity-70 ml-1">#{m.rank} · {m.rrf_contribution.toFixed(4)}</span>
+                              </span>
+                            ))}
+                            {(chunk.method_lineage ?? []).length === 0 && (
+                              <span className="text-xs text-gray-600 italic">no lineage recorded</span>
+                            )}
+                          </div>
+                          {/* Preview when collapsed */}
+                          {!isExpanded && (
+                            <p className="text-xs text-gray-400 mt-1 line-clamp-2 leading-relaxed">
+                              {chunk.text}
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-gray-600 ml-3 mt-0.5 flex-shrink-0">
+                          {isExpanded ? '▲' : '▼'}
+                        </span>
+                      </button>
+
+                      {/* Full chunk text — shown when expanded */}
+                      {isExpanded && (
+                        <div className="border-t border-gray-700 bg-gray-950 p-3">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                              Retrieved Text
+                            </span>
+                            <span className="text-xs text-gray-600 font-mono">{chunk.chunk_id}</span>
+                          </div>
+                          <p className="text-xs text-gray-300 leading-relaxed whitespace-pre-wrap">
+                            {answerWordSet.size > 0
+                              ? chunkWords.map((word, wi) => {
+                                  const clean = word.toLowerCase().replace(/\W/g, '')
+                                  const isMatch = clean.length > 3 && answerWordSet.has(clean)
+                                  return isMatch
+                                    ? <mark key={wi} className="bg-yellow-900/60 text-yellow-200 rounded-sm">{word}</mark>
+                                    : <span key={wi}>{word}</span>
+                                })
+                              : chunk.text
+                            }
+                          </p>
+                          {/* Per-method RRF detail table */}
+                          {(chunk.method_lineage ?? []).length > 0 && (
+                            <div className="mt-3 border-t border-gray-800 pt-2">
+                              <p className="text-xs font-semibold text-gray-500 mb-1.5">RRF Score Breakdown</p>
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-gray-600">
+                                    <th className="text-left font-medium pb-1">Method</th>
+                                    <th className="text-right font-medium pb-1">Rank</th>
+                                    <th className="text-right font-medium pb-1">RRF Term</th>
+                                    <th className="text-right font-medium pb-1">Share</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {chunk.method_lineage.map(m => {
+                                    const sharePct = chunk.score > 0
+                                      ? (m.rrf_contribution / chunk.score) * 100
+                                      : 0
+                                    return (
+                                      <tr key={m.method} className="border-t border-gray-800">
+                                        <td className="py-0.5" style={{ color: getMethodColor(m.method) }}>{m.method}</td>
+                                        <td className="text-right text-gray-400 font-mono">#{m.rank}</td>
+                                        <td className="text-right text-gray-300 font-mono">{m.rrf_contribution.toFixed(5)}</td>
+                                        <td className="text-right text-gray-400">{sharePct.toFixed(1)}%</td>
+                                      </tr>
+                                    )
+                                  })}
+                                  <tr className="border-t border-gray-700 font-semibold">
+                                    <td className="py-0.5 text-gray-300">Total (RRF)</td>
+                                    <td />
+                                    <td className="text-right text-white font-mono">{chunk.score.toFixed(5)}</td>
+                                    <td className="text-right text-white">100%</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <p className="text-xs text-gray-400 line-clamp-2">{chunk.text}</p>
-                  </div>
-                ))}
-                {chunks.length > 15 && (
-                  <p className="text-xs text-gray-500 text-center">… and {chunks.length - 15} more chunks</p>
-                )}
+                  )
+                })}
               </div>
             )}
 
