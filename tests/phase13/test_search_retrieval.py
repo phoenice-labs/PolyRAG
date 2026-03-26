@@ -732,13 +732,17 @@ class TestSearchScreenUI:
         unique_query = f"trail_ui_test_{int(time.time())}"
         search_page.fill('[placeholder="Enter your query..."]', unique_query)
         search_page.keyboard.press("Enter")
-        search_page.wait_for_timeout(3000)
+        # Wait for search to fully complete (SPLADE/multi-backend can take 30-60s)
+        try:
+            search_page.wait_for_load_state("networkidle", timeout=90_000)
+        except Exception:
+            pass  # networkidle timeout is not fatal
 
         # Click Refresh in the trails panel
         refresh_btn = search_page.get_by_role("button", name="↻ Refresh")
         if refresh_btn.count() > 0:
             refresh_btn.first.click()
-            search_page.wait_for_timeout(500)
+            search_page.wait_for_timeout(1_000)
 
         # The query should appear in the panel
         assert search_page.get_by_text(unique_query[:30]).count() > 0, (
@@ -826,7 +830,11 @@ class TestSearchScreenUI:
         unique_query = f"persist_test_{int(time.time())}"
         search_page.fill('[placeholder="Enter your query..."]', unique_query)
         search_page.keyboard.press("Enter")
-        search_page.wait_for_timeout(3000)
+        # Wait for search to fully complete
+        try:
+            search_page.wait_for_load_state("networkidle", timeout=90_000)
+        except Exception:
+            pass
 
         # Reload the page
         search_page.reload(wait_until="networkidle")

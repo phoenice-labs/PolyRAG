@@ -387,8 +387,26 @@ class RAGPipeline:
         coll = collection or self.ingestor.collection_name
         if not self.store.collection_exists(coll):
             return 0
+
+        # Milvus enforces (offset+limit) <= 16384; paginate in chunks to stay within limits.
+        _PAGE_SIZE = 10_000
+        raw: list = []
         try:
-            raw = self.store.fetch_all(coll, limit=100_000)
+            offset = 0
+            while True:
+                try:
+                    page = self.store.fetch_all(coll, limit=_PAGE_SIZE, offset=offset)
+                except TypeError:
+                    # Adapter doesn't support offset — fall back to single-page fetch
+                    page = self.store.fetch_all(coll, limit=_PAGE_SIZE)
+                    raw.extend(page)
+                    break
+                if not page:
+                    break
+                raw.extend(page)
+                if len(page) < _PAGE_SIZE:
+                    break
+                offset += _PAGE_SIZE
         except NotImplementedError:
             pipeline_logger.warning(
                 "Warm-start skipped — adapter has no fetch_all()",

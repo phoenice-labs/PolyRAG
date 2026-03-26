@@ -23,7 +23,7 @@ chromadb>=0.5.0
 faiss-cpu>=1.7.4
 qdrant-client>=1.9.0
 weaviate-client>=4.5.0    # Server adapter (docker-compose.polyrag.yml)
-pymilvus>=2.4.0           # Milvus standalone (docker-compose.polyrag.yml)
+pymilvus[milvus_lite]>=2.4.0  # Milvus standalone + local lite mode (docker-compose.polyrag.yml)
 psycopg2-binary>=2.9.9    # PGVector adapter (docker-compose.polyrag.yml)
 pgvector>=0.3.5           # PGVector Python type support
 

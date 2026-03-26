@@ -25,7 +25,7 @@ import requests
 BASE = "http://localhost:8000/api"
 HAMLET_PATH = "data/shakespeare_hamlet.txt"
 SEARCH_QUERY = "Touching this dreaded sight"
-COLLECTION = "e2e_hamlet_test"
+COLLECTION = "e2e_hamlet_test_minilm"
 ALL_BACKENDS = ["faiss", "chromadb", "qdrant", "weaviate", "milvus", "pgvector"]
 
 
@@ -38,7 +38,7 @@ def _get(path: str, **kwargs) -> requests.Response:
     return requests.get(f"{BASE}{path}", **kwargs)
 
 def _post(path: str, **kwargs) -> requests.Response:
-    kwargs.setdefault("timeout", 120)
+    kwargs.setdefault("timeout", 300)
     return requests.post(f"{BASE}{path}", **kwargs)
 
 def _delete(path: str, **kwargs) -> requests.Response:

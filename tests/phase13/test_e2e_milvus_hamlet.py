@@ -558,16 +558,20 @@ class TestBrowserSmoke:
 
     @staticmethod
     def _find_frontend_url() -> str:
-        """Try common Vite ports and return the first reachable one."""
+        """Try common Vite ports and return the first one that serves PolyRAG content."""
         import requests
+        _POLYRAG_MARKERS = ("polyrag", "searchlab", "search lab", "PolyRAG", "SearchLab")
         for port in (5173, 3000, 3001, 3002, 4173):
             try:
                 r = requests.get(f"http://localhost:{port}", timeout=5)
                 if r.status_code < 500:
-                    return f"http://localhost:{port}"
+                    # Verify this is actually the PolyRAG frontend, not some other app
+                    body = r.text.lower()
+                    if any(m.lower() in body for m in _POLYRAG_MARKERS):
+                        return f"http://localhost:{port}"
             except Exception:
                 pass
-        pytest.skip("No frontend dev server found on ports 5173/3000/3001/3002/4173 — run: npm run dev")
+        pytest.skip("No PolyRAG frontend dev server found on ports 5173/3000/3001/3002/4173 — run: npm run dev")
 
     def test_browser_search_lab_loads(self):
         """Browser can open the SearchLab page."""
