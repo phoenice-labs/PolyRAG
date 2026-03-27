@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { getBackends, getCollections, deleteCollection, clearAllCollections, deleteGraph, deleteAllGraphs, type Collection } from '../api/backends'
+import { getBackends, getCollections, deleteCollection, clearAllCollections, deleteGraph, deleteAllGraphs, purgeCollection, purgeAllCollections, type Collection, type PurgeResult, type PurgeAllResult } from '../api/backends'
 
 const BACKENDS = ['faiss', 'chromadb', 'qdrant', 'weaviate', 'milvus', 'pgvector']
 
@@ -41,6 +41,11 @@ export default function DocumentLibrary() {
   const [clearingAllGraphs, setClearingAllGraphs] = useState(false)
   // All unique collection names seen across all backends (drives the KG section)
   const [allCollections, setAllCollections] = useState<string[]>([])
+
+  // Purge state
+  const [purging, setPurging] = useState<string | null>(null)          // collection name being purged
+  const [purgingAll, setPurgingAll] = useState(false)
+  const [purgeResult, setPurgeResult] = useState<PurgeResult | PurgeAllResult | null>(null)
 
   // Load backend health + probe all backends for collection names on mount
   useEffect(() => {
@@ -178,6 +183,62 @@ export default function DocumentLibrary() {
     }
   }
 
+  const handlePurge = async (collection: string) => {
+    if (!confirm(
+      `⚡ PURGE "${collection}" from ALL storage layers?\n\n` +
+      `This will permanently delete:\n` +
+      `  • All 6 vector store backends\n` +
+      `  • Knowledge Graph snapshot + Kuzu DB\n` +
+      `  • SPLADE index files\n` +
+      `  • BM25 cache files\n` +
+      `  • Pipeline cache entries\n\n` +
+      `This cannot be undone.`
+    )) return
+    setPurging(collection)
+    setPurgeResult(null)
+    try {
+      const result = await purgeCollection(collection)
+      setPurgeResult(result)
+      const deleted = result.summary.backends_deleted.length
+      setMessage({ type: 'ok', text: `Purged "${collection}" from ${deleted} backend(s). See details below.` })
+      loadCollections(activeTab)
+      // Remove from allCollections if no backend has it anymore
+      setAllCollections((prev) => prev.filter((c) => c !== collection || deleted === 0))
+      setEnhanceStatus((prev) => {
+        const next = { ...prev }
+        delete next[collection]
+        return next
+      })
+    } catch (e) {
+      setMessage({ type: 'err', text: `Purge failed: ${e}` })
+    } finally {
+      setPurging(null)
+    }
+  }
+
+  const handlePurgeAll = async () => {
+    if (!confirm(
+      `⚡ PURGE ALL collections from ALL storage layers?\n\n` +
+      `This will permanently delete everything across all 6 vector backends, ` +
+      `all Knowledge Graphs, all SPLADE indexes, all BM25 caches, and the Kuzu DB.\n\n` +
+      `This cannot be undone.`
+    )) return
+    setPurgingAll(true)
+    setPurgeResult(null)
+    try {
+      const result = await purgeAllCollections()
+      setPurgeResult(result)
+      setMessage({ type: 'ok', text: `Purged ${result.count} collection(s) from all storage layers.` })
+      setCollections([])
+      setAllCollections([])
+      setEnhanceStatus({})
+    } catch (e) {
+      setMessage({ type: 'err', text: `Purge all failed: ${e}` })
+    } finally {
+      setPurgingAll(false)
+    }
+  }
+
   const handleEnhanceGraph = async (collection: string) => {
     if (enhancing) return
     // Use the first healthy backend (graph enhance only needs a backend to read chunks from)
@@ -237,15 +298,25 @@ export default function DocumentLibrary() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h1 className="text-xl font-semibold">Document Library</h1>
-        <button
-          onClick={handleClearAll}
-          disabled={clearing || loading}
-          className="px-3 py-1.5 text-xs bg-red-900/50 hover:bg-red-800/70 border border-red-700 text-red-300 rounded disabled:opacity-50 transition-colors"
-        >
-          {clearing ? 'Clearing...' : `⚠ Clear All in ${activeTab}`}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleClearAll}
+            disabled={clearing || loading}
+            className="px-3 py-1.5 text-xs bg-red-900/50 hover:bg-red-800/70 border border-red-700 text-red-300 rounded disabled:opacity-50 transition-colors"
+          >
+            {clearing ? 'Clearing...' : `⚠ Clear All in ${activeTab}`}
+          </button>
+          <button
+            onClick={handlePurgeAll}
+            disabled={purgingAll || loading}
+            title="Holistic purge: removes every collection from ALL 6 backends + graph + SPLADE + BM25 + pipeline cache"
+            className="px-3 py-1.5 text-xs bg-orange-900/50 hover:bg-orange-800/70 border border-orange-700 text-orange-300 rounded disabled:opacity-50 transition-colors"
+          >
+            {purgingAll ? '⟳ Purging All...' : '⚡ Purge Everything'}
+          </button>
+        </div>
       </div>
 
       {/* Backend tabs */}
@@ -309,13 +380,23 @@ export default function DocumentLibrary() {
                       }
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => handleDelete(col.name)}
-                        disabled={deleting === col.name}
-                        className="px-2.5 py-1 text-xs bg-red-900/40 hover:bg-red-800/60 border border-red-800 text-red-400 hover:text-red-300 rounded disabled:opacity-50 transition-colors"
-                      >
-                        {deleting === col.name ? 'Deleting...' : 'Delete'}
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => handleDelete(col.name)}
+                          disabled={deleting === col.name || purging === col.name}
+                          className="px-2.5 py-1 text-xs bg-red-900/40 hover:bg-red-800/60 border border-red-800 text-red-400 hover:text-red-300 rounded disabled:opacity-50 transition-colors"
+                        >
+                          {deleting === col.name ? 'Deleting...' : 'Delete'}
+                        </button>
+                        <button
+                          onClick={() => handlePurge(col.name)}
+                          disabled={purging === col.name || deleting === col.name}
+                          title="Purge from ALL storage layers (vectors + graph + SPLADE + BM25 + pipeline cache)"
+                          className="px-2.5 py-1 text-xs bg-orange-900/40 hover:bg-orange-800/60 border border-orange-700 text-orange-400 hover:text-orange-300 rounded disabled:opacity-50 transition-colors"
+                        >
+                          {purging === col.name ? '⟳ Purging...' : '⚡ Purge All'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -352,6 +433,67 @@ export default function DocumentLibrary() {
             {enhanceLogs.map((line, i) => (
               <div key={i} className="text-xs font-mono text-gray-300 whitespace-pre-wrap">{line}</div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Purge result detail panel */}
+      {purgeResult && (
+        <div className="bg-gray-900 border border-orange-800/50 rounded-lg overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 bg-orange-950/30 border-b border-orange-800/30">
+            <span className="text-sm font-medium text-orange-300">
+              ⚡ Purge Result
+              {'collection' in purgeResult
+                ? <> — <span className="font-mono">{purgeResult.collection}</span></>
+                : <> — {(purgeResult as { count: number }).count} collection(s) purged</>
+              }
+            </span>
+            <button onClick={() => setPurgeResult(null)} className="text-gray-500 hover:text-white text-xs">✕ close</button>
+          </div>
+          <div className="p-4 space-y-3">
+            {'summary' in purgeResult ? (
+              // Single collection purge
+              <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs">
+                <div className="text-gray-400">Vector backends deleted</div>
+                <div className="text-green-400 font-mono">{purgeResult.summary.backends_deleted.join(', ') || '—'}</div>
+                <div className="text-gray-400">Backends skipped (not found)</div>
+                <div className="text-gray-500 font-mono">{purgeResult.summary.backends_skipped.join(', ') || '—'}</div>
+                {Object.keys(purgeResult.summary.backends_error).length > 0 && <>
+                  <div className="text-gray-400">Backend errors</div>
+                  <div className="text-red-400 font-mono">{Object.entries(purgeResult.summary.backends_error).map(([b, e]) => `${b}: ${e}`).join('; ')}</div>
+                </>}
+                <div className="text-gray-400">Graph snapshot deleted</div>
+                <div className={purgeResult.summary.graph_snapshot_deleted ? 'text-green-400' : 'text-gray-500'}>{purgeResult.summary.graph_snapshot_deleted ? 'Yes' : 'Not found'}</div>
+                <div className="text-gray-400">Kuzu DB cleared</div>
+                <div className={purgeResult.summary.kuzu_cleared ? 'text-green-400' : 'text-gray-500'}>{purgeResult.summary.kuzu_cleared ? 'Yes (global)' : 'Not cleared'}</div>
+                <div className="text-gray-400">SPLADE files removed</div>
+                <div className="text-gray-300 font-mono">{purgeResult.summary.splade_files_removed}</div>
+                <div className="text-gray-400">BM25 pkl files removed</div>
+                <div className="text-gray-300 font-mono">{purgeResult.summary.bm25_pkls_removed}</div>
+                <div className="text-gray-400">Pipeline cache evicted</div>
+                <div className="text-gray-300 font-mono">{purgeResult.summary.pipelines_evicted} entries</div>
+              </div>
+            ) : (
+              // Purge-all result
+              <div className="space-y-2 text-xs">
+                <div className="grid grid-cols-2 gap-x-8 gap-y-1">
+                  <div className="text-gray-400">Collections purged</div>
+                  <div className="text-green-400 font-mono">{(purgeResult as PurgeAllResult).count}</div>
+                  <div className="text-gray-400">Kuzu DB cleared</div>
+                  <div className={((purgeResult as PurgeAllResult).kuzu_cleared) ? 'text-green-400' : 'text-gray-500'}>{(purgeResult as PurgeAllResult).kuzu_cleared ? 'Yes' : 'No'}</div>
+                  <div className="text-gray-400">BM25 pkl files removed</div>
+                  <div className="text-gray-300 font-mono">{(purgeResult as PurgeAllResult).bm25_pkls_removed}</div>
+                  <div className="text-gray-400">Pipeline cache evicted</div>
+                  <div className="text-gray-300 font-mono">{(purgeResult as PurgeAllResult).pipelines_evicted} entries</div>
+                </div>
+                {(purgeResult as PurgeAllResult).collections_purged.length > 0 && (
+                  <div className="pt-1">
+                    <div className="text-gray-500 mb-1">Collections:</div>
+                    <div className="font-mono text-gray-400">{(purgeResult as PurgeAllResult).collections_purged.join(', ')}</div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

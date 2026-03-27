@@ -89,9 +89,12 @@ def _delete_collection_in_backend(backend: str, collection: str) -> bool:
 
     Uses a lightweight store-adapter-only connection. After deletion, evicts all
     cached pipeline entries for this collection so stale BM25 / ChunkRegistry state
-    is discarded.
+    is discarded. Also cleans the SPLADE index directory for this collection
+    (collection-scoped, shared across backends — safe to remove idempotently).
     Raises the underlying exception if the adapter fails.
     """
+    from pathlib import Path
+    import shutil
     from api.deps import create_store_adapter, evict_pipeline_cache
     store = create_store_adapter(backend)
     deleted = False
@@ -110,6 +113,16 @@ def _delete_collection_in_backend(backend: str, collection: str) -> bool:
 
     if deleted:
         evict_pipeline_cache(backend, collection)
+
+        # Clean SPLADE index dir (collection-scoped, not backend-scoped)
+        # Safe to remove even if already cleaned by a parallel backend delete.
+        _root = Path(__file__).resolve().parent.parent.parent
+        splade_dir = _root / "data" / "splade" / collection
+        if splade_dir.exists():
+            try:
+                shutil.rmtree(splade_dir)
+            except Exception:
+                pass  # non-fatal: stale index is harmless but orphaned
 
     return deleted
 
