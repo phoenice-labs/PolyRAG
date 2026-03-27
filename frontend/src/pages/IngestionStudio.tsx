@@ -200,6 +200,7 @@ export default function IngestionStudio() {
   const [ingestCollection, setIngestCollection] = useState('')  // collection used in last ingest
   const [preview, setPreview] = useState<ChunkPreview | null>(null)
   const [showPreview, setShowPreview] = useState(false)
+  const [lockConflict, setLockConflict] = useState<{ jobId: string; backend: string } | null>(null)
 
   // Persist text area content across navigation
   const handleSetText = (t: string) => {
@@ -288,6 +289,7 @@ export default function IngestionStudio() {
     setLogs([])
     setJobResults({})
     setErUsed(false)
+    setLockConflict(null)
     setCompletedSteps(new Set())
     advanceStep('upload')
 
@@ -349,8 +351,16 @@ export default function IngestionStudio() {
         )
       })
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setLogs((prev) => [...prev, `ERROR: ${msg}`])
+      // Handle 409 Conflict (collection locked by another ingest job)
+      const anyErr = err as { response?: { status?: number; data?: { blocking_job_id?: string; blocking_backend?: string } } }
+      if (anyErr?.response?.status === 409) {
+        const detail = anyErr.response.data ?? {}
+        setLockConflict({ jobId: detail.blocking_job_id ?? '?', backend: detail.blocking_backend ?? '?' })
+        setLogs((prev) => [...prev, `ERROR: Collection "${activeCollection}" is locked by a running job (${detail.blocking_job_id ?? '?'}). Wait for it to complete or check the Jobs page.`])
+      } else {
+        const msg = err instanceof Error ? err.message : String(err)
+        setLogs((prev) => [...prev, `ERROR: ${msg}`])
+      }
       setLoading(false)
     }
   }
@@ -564,6 +574,23 @@ export default function IngestionStudio() {
               {loading ? 'Running...' : clearFirst ? '⚠ Clear & Ingest' : 'Start Ingestion'}
             </button>
           </div>
+
+          {/* Lock conflict warning */}
+          {lockConflict && (
+            <div className="flex items-start gap-2 bg-amber-900/30 border border-amber-700 rounded p-3 text-sm text-amber-300">
+              <span className="shrink-0 text-base">🔒</span>
+              <div>
+                <p className="font-semibold">Collection locked</p>
+                <p className="text-xs text-amber-400 mt-0.5">
+                  A job on <span className="font-mono">{lockConflict.backend}</span> is already ingesting this collection
+                  (job <span className="font-mono">{lockConflict.jobId.slice(0, 8)}…</span>).
+                  Wait for it to finish or check the{' '}
+                  <button onClick={() => navigate('/jobs')} className="underline hover:text-white">Jobs page</button>.
+                </p>
+              </div>
+              <button onClick={() => setLockConflict(null)} className="ml-auto text-amber-500 hover:text-white text-lg leading-none shrink-0">✕</button>
+            </div>
+          )}
         </div>
 
         {/* Per-backend job status */}

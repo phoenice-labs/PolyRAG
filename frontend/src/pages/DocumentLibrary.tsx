@@ -8,6 +8,26 @@ const BACKEND_COLORS: Record<string, string> = {
   weaviate: 'text-green-400', milvus: 'text-yellow-400', pgvector: 'text-cyan-400',
 }
 
+/** Returns the job ID of a running ingest for the collection, or null if unlocked. */
+async function getCollectionLockStatus(collection: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/ingest/jobs`)
+    if (!res.ok) return null
+    const jobs: { id: string; status: string; collection_name: string | null }[] = await res.json()
+    const running = jobs.find(
+      (j) =>
+        (j.status === 'running' || j.status === 'pending') &&
+        j.collection_name != null &&
+        (j.collection_name === collection ||
+          j.collection_name.startsWith(collection + '_') ||
+          collection.startsWith(j.collection_name + '_'))
+    )
+    return running?.id ?? null
+  } catch {
+    return null
+  }
+}
+
 interface EnhanceStatus {
   collection: string
   graph_exists: boolean
@@ -104,6 +124,11 @@ export default function DocumentLibrary() {
 
   const handleDelete = async (collection: string) => {
     if (!confirm(`Delete collection "${collection}" from ${activeTab}?\n\nThis cannot be undone.`)) return
+    const lockJobId = await getCollectionLockStatus(collection)
+    if (lockJobId) {
+      setMessage({ type: 'err', text: `Cannot delete: "${collection}" is currently being ingested (job ${lockJobId.slice(0, 8)}…). Wait for ingest to complete.` })
+      return
+    }
     setDeleting(collection)
     try {
       await deleteCollection(activeTab, collection)
@@ -194,6 +219,11 @@ export default function DocumentLibrary() {
       `  • Pipeline cache entries\n\n` +
       `This cannot be undone.`
     )) return
+    const lockJobId = await getCollectionLockStatus(collection)
+    if (lockJobId) {
+      setMessage({ type: 'err', text: `Cannot purge: "${collection}" is currently being ingested (job ${lockJobId.slice(0, 8)}…). Wait for ingest to complete.` })
+      return
+    }
     setPurging(collection)
     setPurgeResult(null)
     try {
