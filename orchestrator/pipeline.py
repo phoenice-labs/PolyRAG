@@ -1051,7 +1051,9 @@ class RAGPipeline:
 
         # Phase 5: LLM answer generation
         answer = ""
-        if lm_available:
+        if not results:
+            answer = "Insufficient evidence — no documents were retrieved with the selected retrieval methods. Please check that the collection has been ingested with the required index (e.g., SPLADE must be built at ingest time), or broaden your search by enabling additional retrieval methods."
+        elif lm_available:
             context_text = "\n\n".join(
                 f"[{i+1}] {r.document.text[:600]}" for i, r in enumerate(results[:5])
             )
@@ -1079,7 +1081,6 @@ class RAGPipeline:
             answer = (
                 f"[LM Studio offline — retrieval only]\n"
                 + "\n\n".join(f"[{i+1}] {r.document.text[:300]}" for i, r in enumerate(results[:3]))
-                if results else "No results found."
             )
 
         elapsed_ms = round((time.perf_counter() - t_start) * 1000)
@@ -1200,7 +1201,9 @@ class RAGPipeline:
 
         # Answer generation (backend-specific — uses this backend's retrieved chunks)
         answer = ""
-        if lm_available:
+        if not results:
+            answer = "Insufficient evidence — no documents were retrieved with the selected retrieval methods. Please check that the collection has been ingested with the required index (e.g., SPLADE must be built at ingest time), or broaden your search by enabling additional retrieval methods."
+        elif lm_available:
             context_text = "\n\n".join(
                 f"[{i+1}] {r.document.text[:600]}" for i, r in enumerate(results[:5])
             )
@@ -1226,7 +1229,6 @@ class RAGPipeline:
             answer = (
                 "[LM Studio offline — retrieval only]\n"
                 + "\n\n".join(f"[{i+1}] {r.document.text[:300]}" for i, r in enumerate(results[:3]))
-                if results else "No results found."
             )
 
         elapsed_ms = round((time.perf_counter() - t_start) * 1000)
