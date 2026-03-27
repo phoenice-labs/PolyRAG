@@ -374,7 +374,11 @@ async def _run_enhance_graph(
                 graph_store.upsert_relation(triple.to_relation())
                 new_relations += 1
 
-            if (i + 1) % 10 == 0 or (i + 1) == len(raw_chunks):
+            # Log every chunk in LLM mode (slow, ~1-2s each) so the SSE stream
+            # gets fresh lines frequently enough to stay alive.
+            # In spaCy mode (fast), log every 10 chunks to reduce noise.
+            log_every = 1 if use_llm else 10
+            if (i + 1) % log_every == 0 or (i + 1) == len(raw_chunks):
                 await store.append_log(
                     job_id,
                     f"[enhance] {i+1}/{len(raw_chunks)} chunks — +{new_entities} entities, +{new_relations} relations"
@@ -440,17 +444,27 @@ async def stream_enhance(collection: str, job_id: str) -> EventSourceResponse:
 
     async def _gen():
         sent = 0
+        idle_ticks = 0  # count 0.5s sleep cycles with no new log lines
         while True:
             job = await store.get_job(job_id)
             if job is None:
                 yield {"data": "ERROR: job not found"}
                 return
+            new_lines = len(job.log_lines) - sent
             while sent < len(job.log_lines):
                 yield {"data": job.log_lines[sent]}
                 sent += 1
             if job.status in ("done", "error"):
                 yield {"data": f"STATUS:{job.status}"}
                 return
+            if new_lines == 0:
+                idle_ticks += 1
+                # Send SSE comment (keepalive) every 10s of silence to prevent
+                # proxy/browser from closing the connection during slow LLM calls
+                if idle_ticks % 20 == 0:
+                    yield {"comment": "keepalive"}
+            else:
+                idle_ticks = 0
             await asyncio.sleep(0.5)
 
     return EventSourceResponse(_gen())
