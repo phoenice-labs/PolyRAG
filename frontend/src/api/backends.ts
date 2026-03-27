@@ -25,3 +25,11 @@ export const deleteCollection = (backend: string, collection: string) =>
 
 export const clearAllCollections = (backend: string) =>
   api.delete(`/collections/${backend}`).then((r) => r.data)
+
+// ── Knowledge Graph API ──────────────────────────────────────────────────────
+
+export const deleteGraph = (collection: string) =>
+  api.delete(`/graph/${encodeURIComponent(collection)}`).then((r) => r.data as { deleted: boolean; collection: string })
+
+export const deleteAllGraphs = () =>
+  api.delete('/graph').then((r) => r.data as { deleted: string[]; count: number; errors?: string[] })

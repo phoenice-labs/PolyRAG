@@ -93,6 +93,49 @@ async def list_graphs() -> List[str]:
     return sorted(p.stem for p in _GRAPH_DIR.glob("*.json"))
 
 
+@router.delete("/graph/{collection}")
+async def delete_graph(collection: str) -> Dict:
+    """
+    Delete the persisted graph snapshot for a collection.
+
+    Called automatically when a collection is deleted from all vector backends,
+    or explicitly via the Document Library UI 'Clear Graph' button.
+    Returns {deleted: true} if the file existed, {deleted: false} if it was already gone.
+    """
+    snapshot_path = _GRAPH_DIR / f"{collection}.json"
+    if snapshot_path.exists():
+        try:
+            snapshot_path.unlink()
+            return {"deleted": True, "collection": collection}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to delete graph snapshot: {exc}")
+    return {"deleted": False, "collection": collection}
+
+
+@router.delete("/graph")
+async def delete_all_graphs() -> Dict:
+    """
+    Delete ALL persisted graph snapshots (all collections).
+
+    Used by the Document Library 'Clear All Graphs' button.
+    Returns the list of collections whose graphs were deleted.
+    """
+    if not _GRAPH_DIR.exists():
+        return {"deleted": [], "count": 0}
+    deleted = []
+    errors = []
+    for snap in _GRAPH_DIR.glob("*.json"):
+        try:
+            snap.unlink()
+            deleted.append(snap.stem)
+        except Exception as exc:
+            errors.append(f"{snap.stem}: {exc}")
+    result: Dict = {"deleted": deleted, "count": len(deleted)}
+    if errors:
+        result["errors"] = errors
+    return result
+
+
 class EnhanceStatus(BaseModel):
     collection: str
     graph_exists: bool
