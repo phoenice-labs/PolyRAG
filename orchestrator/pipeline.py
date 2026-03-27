@@ -961,22 +961,27 @@ class RAGPipeline:
     def _fallback_retrieve(self, query_text, coll, top_k, filters, use_multistage,
                            enable_dense: bool = True, enable_bm25: bool = True,
                            enable_splade: bool = True):
-        """Hybrid fallback when graph is not available."""
-        if self._hybrid_retriever and not (enable_dense and enable_bm25):
+        """Hybrid fallback when graph is not available.
+
+        Always routes through the HybridRetriever so that enable_dense /
+        enable_bm25 / enable_splade flags are honoured correctly.  The old
+        code routed to MultiStageRetriever (which embeds a cross-encoder
+        internally) when both dense and BM25 were enabled, which caused two
+        problems:
+          (a) Cross-Encoder Rerank appeared in the trace even when the user
+              had disabled it (enable_rerank=False), because the multistage
+              always applied it.
+          (b) The SPLADE flag was ignored on the multistage path.
+        Cross-Encoder reranking is now applied exclusively in query() at the
+        caller level, gated by enable_rerank.
+        """
+        if self._hybrid_retriever:
             return self._hybrid_retriever.search(
                 query=query_text, top_k=top_k, filters=filters,
                 enable_dense=enable_dense, enable_bm25=enable_bm25,
                 enable_splade=enable_splade,
             )
-        if use_multistage and self._multistage:
-            results = self._multistage.retrieve(query_text, top_k=top_k, filters=filters)
-            # Tag Cross-Encoder rerank as post-processor (MultiStageRetriever always applies it)
-            for r in results:
-                pp = r.document.metadata.get("_post_processors", [])
-                if "Cross-Encoder Rerank" not in pp:
-                    pp.append("Cross-Encoder Rerank")
-                r.document.metadata["_post_processors"] = pp
-            return results
+        # Last-resort fallback: raw vector query (no BM25 / SPLADE)
         q_vec = self.embedder.embed_one(query_text)
         return self.store.query(coll, q_vec, top_k=top_k, filters=filters)
 
