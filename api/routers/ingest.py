@@ -124,6 +124,7 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks) -> Dict:
             chunk_strategy=req.chunk_strategy,
             overlap=req.overlap,
             enable_er=req.enable_er,
+            enable_splade=req.enable_splade,
             embedding_model=req.embedding_model,
         )
         job = await store.create_job(backend=backend, corpus_path=req.corpus_path, config=config)

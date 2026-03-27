@@ -25,6 +25,7 @@ export interface IngestRequest {
   chunk_size: number
   overlap: number
   enable_er: boolean
+  enable_splade: boolean   // pre-build SPLADE index during ingestion (similar to ER)
   embedding_model?: string
 }
 

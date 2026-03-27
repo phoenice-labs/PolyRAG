@@ -62,7 +62,8 @@ class IngestRequest(BaseModel):
     chunk_strategy: str = "section"  # section | sliding | sentence | paragraph
     chunk_size: int = 400
     overlap: int = 50
-    enable_er: bool = True  # entity-relation extraction
+    enable_er: bool = True      # entity-relation extraction (Knowledge Graph)
+    enable_splade: bool = False  # pre-build SPLADE sparse neural index during ingestion
     collection_name: str = "polyrag_docs"
     embedding_model: EmbeddingModel = "all-MiniLM-L6-v2"
 

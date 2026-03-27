@@ -173,6 +173,7 @@ export default function IngestionStudio() {
   const [chunkSize, setChunkSize] = useState(512)
   const [overlap, setOverlap] = useState(64)
   const [extractEntities, setExtractEntities] = useState(false)
+  const [enableSplade, setEnableSplade] = useState(false)
   const [showChunkingGuide, setShowChunkingGuide] = useState(false)
 
   // State
@@ -259,8 +260,7 @@ export default function IngestionStudio() {
     setLogs([])
     setJobResults({})
     setErUsed(false)
-    setCompletedSteps(new Set())
-    advanceStep('upload')
+    setCompletedSteps(new Set())    advanceStep('upload')
 
     // Clear existing collection in each selected backend if requested
     if (clearFirst) {
@@ -284,6 +284,7 @@ export default function IngestionStudio() {
         chunk_size: chunkSize,
         overlap,
         enable_er: extractEntities,
+        enable_splade: enableSplade,
       })
 
       const jobIds = response.job_ids  // { backend: job_id }
@@ -484,6 +485,18 @@ export default function IngestionStudio() {
               onChange={(e) => setExtractEntities(e.target.checked)}
               className="rounded border-gray-600 bg-gray-800" />
             Extract Entities (ER)
+          </label>
+          <label className="flex items-start gap-2 text-xs text-gray-400 cursor-pointer">
+            <input type="checkbox" checked={enableSplade}
+              onChange={(e) => setEnableSplade(e.target.checked)}
+              className="rounded border-gray-600 bg-gray-800 mt-0.5 shrink-0" />
+            <span>
+              Enable SPLADE Index
+              <span className="block text-gray-600 font-normal mt-0.5">
+                Pre-encodes sparse neural vectors during ingestion (~440 MB model, first use only).
+                Enables SPLADE to contribute to RRF fusion at search time.
+              </span>
+            </span>
           </label>
         </div>
 
