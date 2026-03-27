@@ -6,8 +6,73 @@ import RetrievalTrace from '../components/RetrievalTrace/RetrievalTrace'
 import { useStore } from '../store'
 import { search, type SearchResponse, type LLMTraceEntry } from '../api/search'
 import { fetchRetrievalTrails, clearRetrievalTrails, type RetrievalTrailRecord } from '../api/trails'
+import { getCollections, type Collection } from '../api/backends'
 
-// ── LLM Trace Panel ───────────────────────────────────────────────────────────
+// ── Collection Picker ─────────────────────────────────────────────────────────
+
+function CollectionPicker() {
+  const { selectedBackends, activeCollection, setActiveCollection } = useStore()
+  const [collections, setCollections] = useState<Collection[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedBackends.length) return
+    setLoading(true)
+    // Fetch collections from all selected backends, deduplicate by name
+    Promise.allSettled(selectedBackends.map(b => getCollections(b)))
+      .then(results => {
+        const seen = new Set<string>()
+        const merged: Collection[] = []
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            for (const col of r.value) {
+              if (!seen.has(col.name)) {
+                seen.add(col.name)
+                merged.push(col)
+              }
+            }
+          }
+        }
+        merged.sort((a, b) => a.name.localeCompare(b.name))
+        setCollections(merged)
+        // Auto-select first if current activeCollection not present
+        if (merged.length > 0 && !seen.has(activeCollection)) {
+          setActiveCollection(merged[0].name)
+        }
+      })
+      .finally(() => setLoading(false))
+  }, [selectedBackends.join(',')])  // re-fetch when backends change
+
+  return (
+    <div className="bg-gray-900 rounded-lg p-4">
+      <div className="text-xs text-gray-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+        <span>Collection</span>
+        {loading && <span className="text-gray-600 animate-pulse">loading…</span>}
+      </div>
+      {collections.length === 0 && !loading ? (
+        <p className="text-xs text-gray-600 italic">No collections found. Ingest data first.</p>
+      ) : (
+        <select
+          value={activeCollection}
+          onChange={e => setActiveCollection(e.target.value)}
+          className="w-full bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-brand-500"
+        >
+          {collections.map(col => (
+            <option key={col.name} value={col.name}>
+              {col.name}
+              {col.chunk_count != null ? ` (${col.chunk_count.toLocaleString()} chunks)` : ''}
+            </option>
+          ))}
+        </select>
+      )}
+      {activeCollection && (
+        <p className="text-[10px] text-gray-600 mt-1 truncate" title={activeCollection}>
+          Active: {activeCollection}
+        </p>
+      )}
+    </div>
+  )
+}
 
 function LLMTracePanel({ traces }: { traces: LLMTraceEntry[] }) {
   const [openIdx, setOpenIdx] = useState<number | null>(null)
@@ -500,6 +565,7 @@ export default function SearchLab() {
         <div className="bg-gray-900 rounded-lg p-4">
           <BackendSelector />
         </div>
+        <CollectionPicker />
         <div className="bg-gray-900 rounded-lg p-4">
           <MethodToggle />
         </div>
