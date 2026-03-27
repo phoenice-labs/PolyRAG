@@ -190,6 +190,8 @@ class BackendSearchResult(BaseModel):
     graph_paths: List[str] = Field(default_factory=list)
     latency_ms: float = 0.0
     method_contributions: Dict[str, Any] = Field(default_factory=dict)
+    methods_used: Dict[str, bool] = Field(default_factory=dict)  # full flag map from request
+    query_variants: Dict[str, Any] = Field(default_factory=dict)  # rewritten/hyde/stepback text
     error: Optional[str] = None
 
 

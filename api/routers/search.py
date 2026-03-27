@@ -128,10 +128,28 @@ def _append_trail(
 def _compute_method_contributions(pipeline, chunks: list, methods_used: dict) -> dict:
     """
     Compute per-method contribution to the final result set.
-    Reads _last_retrieval_trace (set by pipeline.query()) and correlates
-    with chunk metadata (_method_lineage) to produce marginal contribution stats.
-    Returns a dict keyed by method name.
+    Returns a dict keyed by display method name with full diagnostic detail:
+      - status: 'active' | 'zero' | 'disabled'
+      - reason: human-readable explanation
+      - chunks_contributed, contribution_pct, candidates_before/after, delta
+    ALL 10 methods are always present so the UI can show a complete picture.
     """
+    # Canonical map: flag name → display name
+    FLAG_TO_DISPLAY = {
+        "enable_dense":              "Dense Vector",
+        "enable_bm25":               "BM25 Keyword",
+        "enable_splade":             "SPLADE Sparse Neural",
+        "enable_graph":              "Knowledge Graph",
+        "enable_rerank":             "Cross-Encoder Rerank",
+        "enable_mmr":                "MMR Diversity",
+        "enable_rewrite":            "Query Rewriting",
+        "enable_multi_query":        "Multi-Query",
+        "enable_hyde":               "HyDE Expansion",
+        "enable_raptor":             "RAPTOR",
+        "enable_contextual_rerank":  "Contextual Rerank",
+        "enable_llm_graph":          "LLM Graph Extraction",
+    }
+
     contributions: dict = {}
     trace = getattr(pipeline, "_last_retrieval_trace", []) or []
 
@@ -162,16 +180,109 @@ def _compute_method_contributions(pipeline, chunks: list, methods_used: dict) ->
         contributions[method]["chunks_contributed"] = count
         contributions[method]["contribution_pct"] = round(count / total_chunks * 100, 1)
 
-    # Annotate which methods were requested but contributed nothing
+    # Annotate status + reason for every method that was enabled
     for flag, enabled in methods_used.items():
-        method_key = flag.replace("enable_", "")
-        if enabled and method_key not in contributions and method_key not in method_chunk_counts:
-            contributions[method_key] = {
+        display = FLAG_TO_DISPLAY.get(flag, flag.replace("enable_", "").replace("_", " ").title())
+        if not enabled:
+            # Not enabled — add as disabled entry so UI can show it
+            if display not in contributions:
+                contributions[display] = {
+                    "candidates_before": 0, "candidates_after": 0, "delta": 0,
+                    "chunks_contributed": 0, "contribution_pct": 0.0,
+                    "status": "disabled",
+                    "reason": "Not enabled in this request. Toggle it ON in Method Settings to evaluate its impact.",
+                }
+            continue
+        if display in contributions:
+            entry = contributions[display]
+            pct = entry.get("contribution_pct", 0.0)
+            if pct > 0:
+                entry["status"] = "active"
+                entry["reason"] = f"Surfaced {entry.get('chunks_contributed', 0)} of {total_chunks} final chunks ({pct:.1f}%)."
+            else:
+                entry["status"] = "zero"
+                entry["reason"] = _explain_zero_contribution(flag, entry)
+        else:
+            # Enabled but left no trace — explain why
+            contributions[display] = {
                 "candidates_before": 0, "candidates_after": 0, "delta": 0,
                 "chunks_contributed": 0, "contribution_pct": 0.0,
+                "status": "zero",
+                "reason": _explain_zero_contribution(flag, {}),
+            }
+
+    # Ensure all known methods are present even if not mentioned in methods_used
+    for flag, display in FLAG_TO_DISPLAY.items():
+        if display not in contributions:
+            contributions[display] = {
+                "candidates_before": 0, "candidates_after": 0, "delta": 0,
+                "chunks_contributed": 0, "contribution_pct": 0.0,
+                "status": "disabled",
+                "reason": "Not enabled in this request.",
             }
 
     return contributions
+
+
+def _explain_zero_contribution(flag: str, entry: dict) -> str:
+    """Return a developer-friendly explanation for why an enabled method contributed 0 chunks."""
+    reasons = {
+        "enable_splade": (
+            "SPLADE was enabled but contributed 0 unique chunks after RRF fusion. "
+            "This typically means: (a) SPLADE index not yet built for this collection — "
+            "run an ingestion with SPLADE ON to pre-encode sparse vectors; "
+            "(b) All SPLADE-ranked chunks were already surfaced by Dense or BM25 at higher ranks."
+        ),
+        "enable_graph": (
+            "Knowledge Graph was enabled but contributed 0 unique chunks. "
+            "Possible causes: (a) No entities were extracted from the query; "
+            "(b) Graph snapshot not found — run ingestion with ER enabled; "
+            "(c) Graph traversal found no paths connected to query entities."
+        ),
+        "enable_rerank": (
+            "Cross-Encoder Rerank is a post-processor — it re-orders existing chunks, "
+            "not a retrieval source. Its 0% contribution_pct is expected (it refines, not adds)."
+        ),
+        "enable_mmr": (
+            "MMR Diversity is a post-processor that prunes near-duplicate chunks. "
+            "0% contribution_pct is expected — it filters, not retrieves."
+        ),
+        "enable_raptor": (
+            "RAPTOR was enabled but found no hierarchical summary nodes. "
+            "RAPTOR indexes need to be built during ingestion. "
+            "Re-ingest with RAPTOR ON to create summary tree nodes."
+        ),
+        "enable_rewrite": (
+            "Query Rewriting is a query-expansion step — it generates a better query form. "
+            "It contributes indirectly through the rewritten query used by other methods."
+        ),
+        "enable_multi_query": (
+            "Multi-Query generates paraphrase variants. "
+            "Requires enable_rewrite=true as parent. "
+            "Results merged via union before RRF — may not add unique chunks beyond single-query retrieval."
+        ),
+        "enable_hyde": (
+            "HyDE (Hypothetical Document Embedding) was enabled but added no unique chunks. "
+            "The synthetic document embedding may not have found meaningfully different results "
+            "compared to the original query embedding. Try with a more abstract or vague query."
+        ),
+        "enable_contextual_rerank": (
+            "Contextual Rerank re-ranks using full-context window comparison. "
+            "It requires an LLM call per chunk (expensive). "
+            "0% contribution_pct is expected — it's a post-processor, not a retrieval source."
+        ),
+        "enable_llm_graph": (
+            "LLM Graph Extraction uses the LLM to extract entities from the query at search time. "
+            "0% means either: LLM offline, entity extraction returned no entities, "
+            "or those entities had no matching paths in the knowledge graph."
+        ),
+    }
+    return reasons.get(flag, (
+        "Enabled but contributed 0 unique chunks to the final result set. "
+        f"Candidates before filtering: {entry.get('candidates_before', 0)}, "
+        f"after: {entry.get('candidates_after', 0)}. "
+        "Consider checking if the index/model for this method is properly initialized."
+    ))
 
 
 def _expand_query(config: dict, question: str):
@@ -262,6 +373,8 @@ def _run_search_with_bundle(
             graph_paths=[str(p) for p in (response.graph_paths or [])],
             latency_ms=round(latency_ms, 2),
             method_contributions=contributions,
+            methods_used={k: bool(v) for k, v in (methods_used or {}).items()},
+            query_variants=_extract_query_variants(bundle),
         )
 
         # Persist retrieval trail

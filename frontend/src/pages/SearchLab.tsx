@@ -640,7 +640,10 @@ export default function SearchLab() {
             methodContributions={res.method_contributions}
             chunks={res.results?.map(r => ({ chunk_id: r.chunk_id, text: r.text, score: r.score, method_lineage: r.method_lineage, metadata: r.metadata }))}
             answer={res.answer}
-            label={`Retrieval Trace — ${res.backend}`}
+            graphEntities={res.graph_entities}
+            graphPaths={res.graph_paths}
+            queryVariants={res.query_variants}
+            label={`Method Traceability — ${res.backend}`}
           />
         ))}
 
