@@ -7,7 +7,7 @@ const METHOD_INFO: Record<string, string> = {
   'BM25 Keyword':
     'Classic probabilistic keyword search (Best Match 25). Scores documents by term frequency and inverse document frequency. Excellent for exact-word matches, names, codes, and specific terminology.',
   'SPLADE Sparse Neural':
-    'Sparse Lexical And Dense Expansion: a BERT-based model (naver/splade-v3, Apache 2.0) that learns which vocabulary terms are important for a passage and expands queries with related terms. Beats BM25 2× on MS MARCO benchmarks while staying fully lexical and interpretable. First use downloads ~440 MB model; subsequent queries use pre-encoded disk cache. Runs on CPU.',
+    'Sparse Lexical And Dense Expansion: a BERT-based model (naver/splade-cocondenser-selfdistil, Apache 2.0, ~110 MB) that learns which vocabulary terms are important for a passage and expands queries with related terms. Beats BM25 2× on MS MARCO benchmarks while staying fully lexical and interpretable. Requires a pre-built index (enable "SPLADE Index" toggle at ingest time). Runs on CPU.',
   'Knowledge Graph':
     'Extracts named entities (people, places, concepts) from your query, traverses a graph of entity–relation edges built from the corpus, and fetches chunks that share those entities. Finds related content even without explicit textual overlap.',
   'LLM Entity Extraction':

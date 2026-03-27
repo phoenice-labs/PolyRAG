@@ -288,7 +288,7 @@ def _explain_zero_contribution(flag: str, entry: dict) -> str:
     ) if rrf > 0 else (
         " To fix: re-ingest your collection with 'Enable SPLADE Index' toggled ON in Ingestion Studio. "
         "This pre-encodes sparse vectors during ingestion so SPLADE can immediately participate in RRF fusion. "
-        "Without a pre-built index, SPLADE encodes on first search (slow, ~440 MB model download). "
+        "Without a pre-built index, SPLADE cannot contribute to RRF fusion (the index must be built at ingest time). "
         "With small chunks (≤256 chars) Dense+BM25 often subsume all SPLADE results — try chunk size ≥512."
     )
     reasons = {

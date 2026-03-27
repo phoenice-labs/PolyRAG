@@ -37,7 +37,7 @@ interface AppState {
 const defaultMethods = {
   enable_dense: true,
   enable_bm25: true,
-  enable_splade: false,   // off by default — downloads ~440 MB model on first use; toggle on after model is cached
+  enable_splade: false,   // off by default — requires SPLADE index built at ingest time (enable in Ingestion Studio)
   enable_graph: true,
   enable_rerank: true,
   enable_mmr: true,

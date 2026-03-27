@@ -126,16 +126,22 @@ function LLMTracePanel({ traces }: { traces: LLMTraceEntry[] }) {
 
 // ── Retrieval Trails Panel ────────────────────────────────────────────────────
 
-function TrailsPanel({ searchCount }: { searchCount: number }) {
+function TrailsPanel({ searchCount, activeBackends }: { searchCount: number; activeBackends: string[] }) {
   const [trails, setTrails] = useState<RetrievalTrailRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
+  // Default filter to the first active backend so user only sees relevant trails immediately
+  const [backendFilter, setBackendFilter] = useState<string>('__active__')
+
+  const resolvedFilter = backendFilter === '__active__'
+    ? (activeBackends.length === 1 ? activeBackends[0] : undefined)
+    : (backendFilter === '__all__' ? undefined : backendFilter)
 
   const load = async () => {
     setLoading(true)
     try {
-      setTrails(await fetchRetrievalTrails(50))
+      setTrails(await fetchRetrievalTrails(50, resolvedFilter))
     } catch {
       // silently ignore if API not available
     } finally {
@@ -148,10 +154,22 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
     setTrails([])
   }
 
-  // Reload whenever the panel is open AND a new search finishes (searchCount changes).
+  // Reload whenever the panel is open AND a new search finishes (searchCount or filter changes).
   useEffect(() => {
     if (open) load()
-  }, [open, searchCount])
+  }, [open, searchCount, backendFilter, activeBackends.join(',')])
+
+  // Known backends for the filter dropdown
+  const ALL_BACKENDS = ['faiss', 'chromadb', 'qdrant', 'weaviate', 'milvus', 'pgvector']
+
+  // Display label for current filter
+  const filterLabel = backendFilter === '__all__'
+    ? 'All backends'
+    : backendFilter === '__active__'
+      ? activeBackends.length === 1
+        ? activeBackends[0]
+        : `Active (${activeBackends.join(', ')})`
+      : backendFilter
 
   return (
     <div className="border border-gray-700 rounded-lg bg-gray-900">
@@ -164,8 +182,24 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
       </button>
       {open && (
         <div className="border-t border-gray-700">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800">
-            <span className="text-xs text-gray-500">{trails.length} stored trail{trails.length !== 1 ? 's' : ''}</span>
+          <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">{trails.length} trail{trails.length !== 1 ? 's' : ''}</span>
+              {/* Backend filter */}
+              <span className="text-xs text-gray-600">|</span>
+              <span className="text-xs text-gray-500">Backend:</span>
+              <select
+                value={backendFilter}
+                onChange={(e) => setBackendFilter(e.target.value)}
+                className="text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded px-1.5 py-0.5 focus:outline-none focus:border-sky-500"
+              >
+                <option value="__active__">Active ({activeBackends.length === 1 ? activeBackends[0] : activeBackends.join(', ') || '—'})</option>
+                <option value="__all__">All backends</option>
+                {ALL_BACKENDS.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </div>
             <div className="flex gap-2">
               <button onClick={load} className="text-xs text-sky-400 hover:text-sky-300">↻ Refresh</button>
               <button onClick={handleClear} className="text-xs text-red-400 hover:text-red-300">✕ Clear</button>
@@ -173,7 +207,9 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
           </div>
           {loading && <div className="p-4 text-xs text-gray-500">Loading...</div>}
           {!loading && trails.length === 0 && (
-            <div className="p-4 text-xs text-gray-600 text-center">No trails yet. Run a search to record a trail.</div>
+            <div className="p-4 text-xs text-gray-600 text-center">
+              No trails for <span className="text-gray-400 font-medium">{filterLabel}</span>. Run a search to record a trail.
+            </div>
           )}
           <div className="divide-y divide-gray-800 max-h-96 overflow-y-auto">
             {trails.map((trail, i) => (
@@ -325,7 +361,7 @@ function SearchGuideModal({ onClose }: { onClose: () => void }) {
                   { name: 'Knowledge Graph', desc: 'Entity-relation graph search via spaCy NER + Kuzu. Surfaces chunks connected through named entities (people, places, events).' },
                   { name: 'Cross-Encoder Rerank', desc: 'Re-scores top candidates using a cross-encoder model for higher precision. Adds ~200–500 ms but significantly improves ranking.' },
                   { name: 'MMR Diversity', desc: 'Maximal Marginal Relevance — reduces redundancy by penalising duplicate-content chunks. Use when results feel repetitive.' },
-                  { name: 'SPLADE', desc: 'Sparse neural retrieval (naver/splade-v3). Learned term expansion — better than BM25 for domain-specific queries. Requires SPLADE index built at ingest time.' },
+                  { name: 'SPLADE', desc: 'Sparse neural retrieval (naver/splade-cocondenser-selfdistil, ~110 MB, Apache 2.0). Learned term expansion — better than BM25 for domain-specific queries. Requires SPLADE index built at ingest time (toggle "Enable SPLADE Index" in Ingestion Studio).' },
                 ]},
                 { group: 'LLM-Required (needs LM Studio)', color: 'text-amber-400', methods: [
                   { name: 'Query Rewrite', desc: 'LLM rephrases your query before retrieval — fixes typos, expands abbreviations, clarifies ambiguous questions.' },
@@ -714,7 +750,7 @@ export default function SearchLab() {
         ))}
 
         {/* Persistent Retrieval Trails (always visible, auto-reloads after each search) */}
-        <TrailsPanel searchCount={trailSearchCount} />
+        <TrailsPanel searchCount={trailSearchCount} activeBackends={selectedBackends} />
 
         {/* LLM Trace Panels — one per backend result that has LLM calls */}
         {results.map((res) =>

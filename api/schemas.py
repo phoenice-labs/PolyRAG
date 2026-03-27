@@ -24,7 +24,7 @@ class RetrievalMethods(BaseModel):
     # ── Independent methods — freely combinable ───────────────────────────────
     enable_dense: bool = True
     enable_bm25: bool = True
-    enable_splade: bool = False     # SPLADE sparse neural (off by default — downloads ~440 MB model on first use)
+    enable_splade: bool = False     # SPLADE sparse neural (off by default — requires pre-built index at ingest time)
     enable_graph: bool = True
     enable_rerank: bool = True      # Cross-Encoder (post-retrieval)
     enable_mmr: bool = True         # MMR diversity (post-retrieval)
