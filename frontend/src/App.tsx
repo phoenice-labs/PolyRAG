@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import BackendHealthBar from './components/BackendHealthBar/BackendHealthBar'
 import IngestionStudio from './pages/IngestionStudio'
 import SearchLab from './pages/SearchLab'
@@ -11,6 +11,7 @@ import EvaluationStudio from './pages/EvaluationStudio'
 import Settings from './pages/Settings'
 import JobHistory from './pages/JobHistory'
 import PromptEditor from './pages/PromptEditor'
+import { useStore } from './store'
 
 const queryClient = new QueryClient()
 
@@ -190,48 +191,95 @@ function AboutModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function App() {
-  const [showAbout, setShowAbout] = useState(false)
-
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <div className="flex flex-col h-screen">
-          <BackendHealthBar />
-          <div className="flex flex-1 overflow-hidden">
-            <nav className="w-48 bg-gray-900 border-r border-gray-800 flex flex-col p-4 gap-1 shrink-0">
-              <div className="flex items-center gap-1.5 mb-4">
-                <span className="text-brand-500 font-bold text-lg">PolyRAG</span>
-                <button
-                  onClick={() => setShowAbout(true)}
-                  title="About PolyRAG"
-                  className="w-4 h-4 rounded-full bg-gray-700 hover:bg-brand-500 text-gray-400 hover:text-white text-[10px] font-bold flex items-center justify-center transition-colors shrink-0"
-                >
-                  i
-                </button>
-              </div>
-              {NAV.map(({ to, label }) => (
-                <NavLink key={to} to={to} end={to==='/'} className={({isActive}) =>
-                  `px-3 py-2 rounded text-sm transition-colors ${isActive ? 'bg-brand-500 text-white' : 'text-gray-400 hover:text-gray-100 hover:bg-gray-800'}`
-                }>{label}</NavLink>
-              ))}
-            </nav>
-            <main className="flex-1 overflow-auto p-6">
-              <Routes>
-                <Route path="/" element={<IngestionStudio />} />
-                <Route path="/search" element={<SearchLab />} />
-                <Route path="/compare" element={<ComparisonMatrix />} />
-                <Route path="/graph" element={<KnowledgeGraph />} />
-                <Route path="/library" element={<DocumentLibrary />} />
-                <Route path="/evaluate" element={<EvaluationStudio />} />
-                <Route path="/jobs" element={<JobHistory />} />
-                <Route path="/prompts" element={<PromptEditor />} />
-                <Route path="/settings" element={<Settings />} />
-              </Routes>
-            </main>
-          </div>
-        </div>
-        {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
+        <AppShell />
       </BrowserRouter>
     </QueryClientProvider>
+  )
+}
+
+function AppShell() {
+  const [showAbout, setShowAbout] = useState(false)
+  const activeIngestJobs = useStore((s) => s.activeIngestJobs)
+  const clearActiveIngestJobs = useStore((s) => s.clearActiveIngestJobs)
+  const setActiveIngestJob = useStore((s) => s.setActiveIngestJob)
+
+  // Poll backend for running jobs — syncs Zustand store with server truth.
+  const { data: runningJobs } = useQuery<{ id: string; status: string; backend: string }[]>({
+    queryKey: ['runningJobs'],
+    queryFn: async () => {
+      const res = await fetch('/api/ingest/jobs')
+      if (!res.ok) return []
+      return res.json()
+    },
+    refetchInterval: 5000,
+    select: (jobs) => jobs.filter((j) => j.status === 'running' || j.status === 'pending'),
+  })
+
+  // Keep Zustand store in sync: clear jobs that are no longer running on the server.
+  const runningIds = new Set((runningJobs ?? []).map((j) => j.id))
+  const storedJobs = Object.entries(activeIngestJobs)
+  for (const [backend, jobId] of storedJobs) {
+    if (activeIngestJobs[backend] && runningJobs !== undefined && !runningIds.has(jobId)) {
+      // Job finished — remove from active store
+      const next = { ...activeIngestJobs }
+      delete next[backend]
+      if (Object.keys(next).length !== Object.keys(activeIngestJobs).length) {
+        clearActiveIngestJobs()
+        for (const [b, id] of Object.entries(next)) setActiveIngestJob(b, id)
+      }
+    }
+  }
+
+  const runningCount = runningJobs?.length ?? 0
+
+  return (
+    <div className="flex flex-col h-screen">
+      <BackendHealthBar />
+      <div className="flex flex-1 overflow-hidden">
+        <nav className="w-48 bg-gray-900 border-r border-gray-800 flex flex-col p-4 gap-1 shrink-0">
+          <div className="flex items-center gap-1.5 mb-4">
+            <span className="text-brand-500 font-bold text-lg">PolyRAG</span>
+            <button
+              onClick={() => setShowAbout(true)}
+              title="About PolyRAG"
+              className="w-4 h-4 rounded-full bg-gray-700 hover:bg-brand-500 text-gray-400 hover:text-white text-[10px] font-bold flex items-center justify-center transition-colors shrink-0"
+            >
+              i
+            </button>
+          </div>
+          {NAV.map(({ to, label }) => (
+            <NavLink key={to} to={to} end={to==='/'} className={({isActive}) =>
+              `px-3 py-2 rounded text-sm transition-colors ${isActive ? 'bg-brand-500 text-white' : 'text-gray-400 hover:text-gray-100 hover:bg-gray-800'}`
+            }>{label}</NavLink>
+          ))}
+          {runningCount > 0 && (
+            <NavLink
+              to="/jobs"
+              className="mt-auto flex items-center gap-1.5 px-3 py-2 rounded text-xs bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 transition-colors animate-pulse"
+            >
+              <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+              {runningCount} job{runningCount > 1 ? 's' : ''} running
+            </NavLink>
+          )}
+        </nav>
+        <main className="flex-1 overflow-auto p-6">
+          <Routes>
+            <Route path="/" element={<IngestionStudio />} />
+            <Route path="/search" element={<SearchLab />} />
+            <Route path="/compare" element={<ComparisonMatrix />} />
+            <Route path="/graph" element={<KnowledgeGraph />} />
+            <Route path="/library" element={<DocumentLibrary />} />
+            <Route path="/evaluate" element={<EvaluationStudio />} />
+            <Route path="/jobs" element={<JobHistory />} />
+            <Route path="/prompts" element={<PromptEditor />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </main>
+      </div>
+      {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
+    </div>
   )
 }

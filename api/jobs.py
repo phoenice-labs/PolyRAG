@@ -5,6 +5,18 @@ Persistence strategy: write-through to data/jobs.jsonl (one JSON line per job).
 On startup, existing jobs are loaded from disk so status survives server restarts.
 The in-memory dict is the source of truth for reads; disk is the durability layer.
 
+Retention policy (auto-applied on startup and on each new job):
+  - Completed/errored jobs are kept for JOB_RETENTION_DAYS (default 7 days).
+  - Log lines for completed jobs older than LOG_RETENTION_HOURS (default 24h) are
+    stripped from disk to keep the file small; the job metadata (status, result) is kept.
+  - Running/pending jobs are never pruned.
+
+Write optimisation:
+  - Status changes and results → full file rewrite (infrequent).
+  - Log line appends → buffered in memory only; flushed to disk every
+    LOG_FLUSH_INTERVAL lines OR when job reaches done/error status.
+    This eliminates the O(N*M) rewrite storm during a 459-chunk ingest.
+
 Thread/async safety: asyncio.Lock guards all mutations.
 """
 from __future__ import annotations
@@ -13,15 +25,27 @@ import asyncio
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _JOBS_FILE = Path("data/jobs.jsonl")
 
+# Retention / flush configuration
+JOB_RETENTION_DAYS: int = 7        # keep done/error job metadata for N days
+LOG_RETENTION_HOURS: int = 24      # strip log_lines from done jobs older than N hours
+LOG_FLUSH_INTERVAL: int = 20       # flush log lines to disk every N appends
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(s: str) -> datetime:
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -62,18 +86,24 @@ class JobStore:
     Thread-safe job store with file write-through persistence.
 
     Jobs survive server restarts — on first access, existing jobs are loaded
-    from data/jobs.jsonl. Each mutation rewrites the entire file (safe for
+    from data/jobs.jsonl. Each status mutation rewrites the entire file (safe for
     the expected job counts in a developer/integration context; use Redis
     for high-volume production job queues).
+
+    Log appends are buffered and only flushed to disk every LOG_FLUSH_INTERVAL
+    lines to avoid the full-file-rewrite storm during high-frequency ingestion.
     """
 
     def __init__(self) -> None:
         self._jobs: Dict[str, Job] = {}
         self._lock = asyncio.Lock()
-        self._loaded = False  # lazy load on first access
+        self._loaded = False
+        self._unflushed_logs: Dict[str, int] = {}  # job_id → unflushed log count
 
     def _ensure_dir(self) -> None:
         _JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Disk I/O ──────────────────────────────────────────────────────────────
 
     def _load_from_disk(self) -> None:
         """Load persisted jobs from disk (called once, lazily)."""
@@ -103,10 +133,49 @@ class JobStore:
         except Exception:
             pass  # disk write failure is non-fatal; in-memory state is authoritative
 
+    # ── Retention / pruning ───────────────────────────────────────────────────
+
+    def _prune(self) -> None:
+        """
+        Remove stale jobs and strip old log lines. Caller must hold the lock.
+
+        Rules:
+        - done/error jobs older than JOB_RETENTION_DAYS → deleted entirely.
+        - done/error jobs older than LOG_RETENTION_HOURS → log_lines cleared
+          (metadata kept for history; logs no longer needed after 24 h).
+        - pending/running jobs → never pruned.
+        """
+        now = datetime.now(timezone.utc)
+        retain_cutoff = now - timedelta(days=JOB_RETENTION_DAYS)
+        log_cutoff = now - timedelta(hours=LOG_RETENTION_HOURS)
+
+        to_delete = []
+        dirty = False
+        for job_id, job in self._jobs.items():
+            if job.status not in ("done", "error"):
+                continue
+            created = _parse_iso(job.created_at)
+            if created < retain_cutoff:
+                to_delete.append(job_id)
+            elif created < log_cutoff and job.log_lines:
+                job.log_lines = []
+                dirty = True
+
+        for job_id in to_delete:
+            del self._jobs[job_id]
+            self._unflushed_logs.pop(job_id, None)
+            dirty = True
+
+        if dirty:
+            self._flush_to_disk()
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
     async def _lazy_load(self) -> None:
-        """Load from disk on first call (inside the lock)."""
+        """Load from disk and prune on first call (inside the lock)."""
         if not self._loaded:
             self._load_from_disk()
+            self._prune()
             self._loaded = True
 
     async def create_job(
@@ -117,6 +186,7 @@ class JobStore:
     ) -> Job:
         async with self._lock:
             await self._lazy_load()
+            self._prune()  # prune on every new job to keep file lean
             job = Job(
                 id=str(uuid.uuid4()),
                 status="pending",
@@ -125,6 +195,7 @@ class JobStore:
                 config=config,
             )
             self._jobs[job.id] = job
+            self._unflushed_logs[job.id] = 0
             self._flush_to_disk()
             return job
 
@@ -147,15 +218,30 @@ class JobStore:
             if error is not None:
                 job.error = error
             job.updated_at = _now_iso()
+            # Status change always flushes (infrequent — once per job lifecycle)
+            self._unflushed_logs[job_id] = 0
             self._flush_to_disk()
 
     async def append_log(self, job_id: str, line: str) -> None:
         async with self._lock:
             await self._lazy_load()
             job = self._jobs.get(job_id)
-            if job:
-                job.log_lines.append(line)
-                job.updated_at = _now_iso()
+            if not job:
+                return
+            job.log_lines.append(line)
+            job.updated_at = _now_iso()
+            # Buffered flush: only write to disk every LOG_FLUSH_INTERVAL lines
+            count = self._unflushed_logs.get(job_id, 0) + 1
+            self._unflushed_logs[job_id] = count
+            if count >= LOG_FLUSH_INTERVAL:
+                self._unflushed_logs[job_id] = 0
+                self._flush_to_disk()
+
+    async def flush_job_logs(self, job_id: str) -> None:
+        """Force-flush any buffered log lines for a job (call on done/error)."""
+        async with self._lock:
+            if self._unflushed_logs.get(job_id, 0) > 0:
+                self._unflushed_logs[job_id] = 0
                 self._flush_to_disk()
 
     async def get_job(self, job_id: str) -> Optional[Job]:
@@ -167,3 +253,16 @@ class JobStore:
         async with self._lock:
             await self._lazy_load()
             return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+
+    async def delete_completed(self) -> int:
+        """Delete all done/error jobs. Returns count deleted."""
+        async with self._lock:
+            await self._lazy_load()
+            to_delete = [jid for jid, j in self._jobs.items() if j.status in ("done", "error")]
+            for jid in to_delete:
+                del self._jobs[jid]
+                self._unflushed_logs.pop(jid, None)
+            if to_delete:
+                self._flush_to_disk()
+            return len(to_delete)
+

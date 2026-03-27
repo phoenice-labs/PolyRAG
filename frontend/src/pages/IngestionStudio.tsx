@@ -1,5 +1,5 @@
-import { useState, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { useNavigate, useBlocker } from 'react-router-dom'
 import BackendSelector from '../components/BackendSelector/BackendSelector'
 import IngestionFlow from '../components/IngestionFlow/IngestionFlow'
 import LogStream from '../components/LogStream/LogStream'
@@ -158,22 +158,36 @@ function ChunkingGuideModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function IngestionStudio() {
-  const { selectedBackends, activeCollection, setActiveCollection } = useStore()
+  const {
+    selectedBackends, activeCollection, setActiveCollection,
+    ingestConfig, setIngestConfig,
+    setActiveIngestJob,
+  } = useStore()
   const navigate = useNavigate()
 
   // Source mode
   const [sourceMode, setSourceMode] = useState<SourceMode>('server')
-  const [text, setText] = useState('')
+  const [text, setText] = useState(() => {
+    try { return sessionStorage.getItem('polyrag-ingest-text') ?? '' } catch { return '' }
+  })
   const [serverPath, setServerPath] = useState('data/shakespeare.txt')
   const [dragging, setDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Chunking config
-  const [strategy, setStrategy] = useState('sentence')
-  const [chunkSize, setChunkSize] = useState(512)
-  const [overlap, setOverlap] = useState(64)
-  const [extractEntities, setExtractEntities] = useState(false)
-  const [enableSplade, setEnableSplade] = useState(false)
+  // Chunking config — sourced from Zustand (persisted across navigation)
+  const strategy = ingestConfig.strategy
+  const chunkSize = ingestConfig.chunkSize
+  const overlap = ingestConfig.overlap
+  const extractEntities = ingestConfig.extractEntities
+  const enableSplade = ingestConfig.enableSplade
+  const clearFirst = ingestConfig.clearFirst
+  const setStrategy = (v: string) => setIngestConfig({ strategy: v })
+  const setChunkSize = (v: number) => setIngestConfig({ chunkSize: v })
+  const setOverlap = (v: number) => setIngestConfig({ overlap: v })
+  const setExtractEntities = (v: boolean) => setIngestConfig({ extractEntities: v })
+  const setEnableSplade = (v: boolean) => setIngestConfig({ enableSplade: v })
+  const setClearFirst = (v: boolean) => setIngestConfig({ clearFirst: v })
+
   const [showChunkingGuide, setShowChunkingGuide] = useState(false)
 
   // State
@@ -186,7 +200,21 @@ export default function IngestionStudio() {
   const [ingestCollection, setIngestCollection] = useState('')  // collection used in last ingest
   const [preview, setPreview] = useState<ChunkPreview | null>(null)
   const [showPreview, setShowPreview] = useState(false)
-  const [clearFirst, setClearFirst] = useState(false)
+
+  // Persist text area content across navigation
+  const handleSetText = (t: string) => {
+    setText(t)
+    try { sessionStorage.setItem('polyrag-ingest-text', t) } catch { /* ignore */ }
+  }
+
+  // Block in-app navigation while an ingest stream is active so users
+  // can't accidentally lose the log stream without a warning.
+  const blocker = useBlocker(loading)
+
+  // Dismiss the "leave?" prompt automatically if loading finishes while blocked.
+  useEffect(() => {
+    if (!loading && blocker.state === 'blocked') blocker.reset()
+  }, [loading, blocker])
 
   // Step order for auto-advancing completed steps
   const STEP_ORDER = ['upload', 'chunk', 'embed', 'graph', 'upsert']
@@ -237,7 +265,7 @@ export default function IngestionStudio() {
   const readFile = (file: File) => {
     const reader = new FileReader()
     reader.onload = (ev) => {
-      setText(ev.target?.result as string ?? '')
+      handleSetText(ev.target?.result as string ?? '')
       setSourceMode('file')
     }
     reader.readAsText(file)
@@ -291,6 +319,9 @@ export default function IngestionStudio() {
       const jobIds = response.job_ids  // { backend: job_id }
       const backends = Object.keys(jobIds)
       let doneCount = 0
+
+      // Persist job IDs to Zustand so they survive navigation
+      backends.forEach((backend) => setActiveIngestJob(backend, jobIds[backend]))
 
       // Stream logs from all backend jobs simultaneously
       backends.forEach((backend) => {
@@ -370,7 +401,7 @@ export default function IngestionStudio() {
           {sourceMode === 'text' && (
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => handleSetText(e.target.value)}
               placeholder="Paste your document text here..."
               className="w-full h-36 bg-gray-800 text-sm text-gray-200 rounded border border-gray-700 p-2 resize-none focus:outline-none focus:border-brand-500"
             />
@@ -614,6 +645,36 @@ export default function IngestionStudio() {
 
       {/* Chunking Guide Modal */}
       {showChunkingGuide && <ChunkingGuideModal onClose={() => setShowChunkingGuide(false)} />}
+
+      {/* Navigation blocker — shown when user tries to leave while ingest is streaming */}
+      {blocker.state === 'blocked' && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-amber-700 rounded-xl p-6 w-96 shadow-2xl">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-amber-400 text-lg">⚡</span>
+              <h2 className="text-base font-semibold text-white">Ingest in progress</h2>
+            </div>
+            <p className="text-sm text-gray-300 mb-5">
+              An ingestion job is still running. Navigating away won't stop the backend job —
+              it will complete in the background. You can track progress in <strong className="text-white">⌂ Jobs</strong>.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => blocker.reset()}
+                className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
+              >
+                Stay
+              </button>
+              <button
+                onClick={() => blocker.proceed()}
+                className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm rounded-lg transition-colors"
+              >
+                Leave (job runs in background)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
