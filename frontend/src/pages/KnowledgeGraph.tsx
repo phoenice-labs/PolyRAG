@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import * as d3 from 'd3'
 import { api } from '../api/client'
+import { deleteGraph, deleteAllGraphs } from '../api/backends'
 
 interface ChunkRef {
   chunk_id: string
@@ -57,6 +58,9 @@ export default function KnowledgeGraph() {
   const [tableSearch, setTableSearch] = useState('')
   const [sortKey, setSortKey] = useState<'label' | 'type' | 'frequency' | 'chunks' | 'relations'>('frequency')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [clearingGraph, setClearingGraph] = useState(false)
+  const [clearingAllGraphs, setClearingAllGraphs] = useState(false)
+  const [clearMessage, setClearMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
 
   useEffect(() => {
     api.get<string[]>('/graph').then((r) => {
@@ -97,6 +101,42 @@ export default function KnowledgeGraph() {
   }, [collection])
 
   useEffect(() => { loadGraph() }, [loadGraph])
+
+  const handleClearGraph = useCallback(async () => {
+    if (!collection) return
+    if (!confirm(`Clear Knowledge Graph for "${collection}"?\n\nThis deletes:\n• The JSON snapshot for this collection\n• ALL Kuzu graph DB data (shared — other collections' Kuzu data is also cleared)\n\nVector store data is NOT affected. Rebuild by re-ingesting with ER enabled.`)) return
+    setClearingGraph(true)
+    setClearMessage(null)
+    try {
+      await deleteGraph(collection)
+      setClearMessage({ type: 'ok', text: `Graph cleared for "${collection}". Kuzu DB also cleared.` })
+      setNodes([])
+      setLinks([])
+      await refreshCollections()
+    } catch (e) {
+      setClearMessage({ type: 'err', text: `Clear failed: ${e}` })
+    } finally {
+      setClearingGraph(false)
+    }
+  }, [collection, refreshCollections])
+
+  const handleClearAllGraphs = useCallback(async () => {
+    if (!confirm('⚠ Clear ALL Knowledge Graphs?\n\nThis deletes:\n• All JSON graph snapshots (every collection)\n• ALL Kuzu graph DB data\n• All cached pipelines (will reload on next request)\n\nVector store data is NOT affected.')) return
+    setClearingAllGraphs(true)
+    setClearMessage(null)
+    try {
+      const result = await deleteAllGraphs()
+      setClearMessage({ type: 'ok', text: `Cleared ${result.count} graph(s). Kuzu DB cleared. ${result.pipelines_evicted ?? 0} pipeline(s) evicted from cache.` })
+      setNodes([])
+      setLinks([])
+      setCollections([])
+      setCollection('')
+    } catch (e) {
+      setClearMessage({ type: 'err', text: `Clear all failed: ${e}` })
+    } finally {
+      setClearingAllGraphs(false)
+    }
+  }, [])
 
   // ── D3 visual ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -235,10 +275,33 @@ export default function KnowledgeGraph() {
 
         <button
           onClick={async () => { await refreshCollections(); await loadGraph() }}
+          disabled={loading || clearingGraph || clearingAllGraphs}
           title="Refresh collection list and graph data from server"
-          className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200 bg-gray-800 rounded border border-gray-700 hover:border-gray-500 transition-colors"
+          className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200 bg-gray-800 rounded border border-gray-700 hover:border-gray-500 disabled:opacity-50 transition-colors"
         >
           ↻ Refresh
+        </button>
+
+        {/* Clear this graph */}
+        {collection && (
+          <button
+            onClick={handleClearGraph}
+            disabled={clearingGraph || clearingAllGraphs || loading}
+            title={`Delete graph snapshot and Kuzu data for "${collection}"`}
+            className="px-2 py-1 text-xs bg-red-900/30 hover:bg-red-800/50 border border-red-800 text-red-400 hover:text-red-300 rounded disabled:opacity-50 transition-colors"
+          >
+            {clearingGraph ? '⟳ Clearing...' : '🗑 Clear This Graph'}
+          </button>
+        )}
+
+        {/* Clear ALL graphs */}
+        <button
+          onClick={handleClearAllGraphs}
+          disabled={clearingGraph || clearingAllGraphs || loading}
+          title="Delete ALL graph snapshots and clear the Kuzu DB"
+          className="px-2 py-1 text-xs bg-red-900/40 hover:bg-red-800/60 border border-red-700 text-red-300 hover:text-red-200 rounded disabled:opacity-50 transition-colors"
+        >
+          {clearingAllGraphs ? '⟳ Clearing All...' : '🗑 Clear All Graphs'}
         </button>
 
         {/* Tab switcher */}
@@ -288,6 +351,18 @@ export default function KnowledgeGraph() {
 
         {loading && <span className="text-gray-500 text-xs">Loading…</span>}
       </div>
+
+      {/* Clear operation status message */}
+      {clearMessage && (
+        <div className={`px-3 py-2 rounded text-sm flex items-center justify-between ${
+          clearMessage.type === 'ok'
+            ? 'bg-green-900/30 border border-green-800 text-green-300'
+            : 'bg-red-900/30 border border-red-800 text-red-300'
+        }`}>
+          <span>{clearMessage.type === 'ok' ? '✓' : '✗'} {clearMessage.text}</span>
+          <button onClick={() => setClearMessage(null)} className="ml-3 text-gray-500 hover:text-white text-xs">✕</button>
+        </div>
+      )}
 
       {/* ── Visual tab ──────────────────────────────────────────────────────── */}
       {tab === 'visual' && (

@@ -21,6 +21,46 @@ router = APIRouter(tags=["graph"])
 
 # Graph snapshots are persisted here by pipeline._save_graph_snapshot()
 _GRAPH_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "graphs"
+# Kuzu embedded graph database path (shared across all collections)
+_KUZU_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "graph.kuzu"
+
+
+def _clear_kuzu_store() -> None:
+    """
+    Clear ALL entities and relations from the shared Kuzu graph database.
+
+    Kuzu is an embedded persistent graph DB stored at data/graph.kuzu. It is
+    shared across all collections (no per-collection isolation). Clearing it
+    removes all entity/relation data; JSON snapshots are independent and serve
+    as the graph router's source of truth.
+
+    This is a synchronous function — call via asyncio.to_thread() from async routes.
+    Silently no-ops if kuzu is not installed or the DB does not exist yet.
+    """
+    if not _KUZU_DB_PATH.exists():
+        return
+    try:
+        import kuzu  # type: ignore[import]
+    except ImportError:
+        return  # kuzu not installed — graph backend is NetworkX (no persistent store)
+
+    try:
+        db = kuzu.Database(str(_KUZU_DB_PATH))
+        conn = kuzu.Connection(db)
+        for stmt in [
+            "MATCH (e:Entity)-[r:APPEARS_IN]->(c:Chunk) DELETE r",
+            "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) DELETE r",
+            "MATCH (e:Entity) DELETE e",
+            "MATCH (c:Chunk) DELETE c",
+        ]:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass  # table may not exist yet — ignore
+        conn = None
+        db = None
+    except Exception:
+        pass  # DB may be locked or corrupt — best-effort
 
 
 def _get_graph_data(collection: str) -> GraphResponse:
@@ -96,43 +136,86 @@ async def list_graphs() -> List[str]:
 @router.delete("/graph/{collection}")
 async def delete_graph(collection: str) -> Dict:
     """
-    Delete the persisted graph snapshot for a collection.
+    Delete the persisted graph snapshot for a collection AND clear the shared Kuzu DB.
 
-    Called automatically when a collection is deleted from all vector backends,
-    or explicitly via the Document Library UI 'Clear Graph' button.
-    Returns {deleted: true} if the file existed, {deleted: false} if it was already gone.
+    The Kuzu embedded graph database (`data/graph.kuzu`) is global — all collections
+    share a single Kuzu instance with no per-collection isolation. Clearing one
+    collection's graph therefore clears the Kuzu DB for all collections. JSON
+    snapshots for other collections remain on disk and will be restored from those
+    files on next pipeline startup.
+
+    Also evicts all cached pipelines for this collection so the next request gets
+    a fresh pipeline without stale in-memory graph data.
     """
+    from api.deps import evict_all_pipelines_for_collection
+
     snapshot_path = _GRAPH_DIR / f"{collection}.json"
+    deleted_json = False
     if snapshot_path.exists():
         try:
             snapshot_path.unlink()
-            return {"deleted": True, "collection": collection}
+            deleted_json = True
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to delete graph snapshot: {exc}")
-    return {"deleted": False, "collection": collection}
+
+    # Clear the shared Kuzu DB (best-effort — non-fatal if kuzu not installed)
+    cleared_kuzu = False
+    try:
+        await asyncio.to_thread(_clear_kuzu_store)
+        cleared_kuzu = True
+    except Exception:
+        pass  # kuzu not installed or already empty — not fatal
+
+    # Evict cached pipelines so stale in-memory graph is discarded
+    evicted = evict_all_pipelines_for_collection(collection)
+
+    return {
+        "deleted": deleted_json,
+        "collection": collection,
+        "kuzu_cleared": cleared_kuzu,
+        "pipelines_evicted": evicted,
+    }
 
 
 @router.delete("/graph")
 async def delete_all_graphs() -> Dict:
     """
-    Delete ALL persisted graph snapshots (all collections).
+    Delete ALL persisted graph snapshots AND clear the shared Kuzu DB.
 
-    Used by the Document Library 'Clear All Graphs' button.
-    Returns the list of collections whose graphs were deleted.
+    Used by the Document Library 'Clear All Graphs' button and the Graph page.
+    Returns the list of collections whose JSON snapshots were deleted.
     """
+    from api.deps import evict_all_pipelines
+
     if not _GRAPH_DIR.exists():
-        return {"deleted": [], "count": 0}
-    deleted = []
-    errors = []
-    for snap in _GRAPH_DIR.glob("*.json"):
-        try:
-            snap.unlink()
-            deleted.append(snap.stem)
-        except Exception as exc:
-            errors.append(f"{snap.stem}: {exc}")
-    result: Dict = {"deleted": deleted, "count": len(deleted)}
-    if errors:
-        result["errors"] = errors
+        deleted: list = []
+    else:
+        deleted = []
+        errors = []
+        for snap in _GRAPH_DIR.glob("*.json"):
+            try:
+                snap.unlink()
+                deleted.append(snap.stem)
+            except Exception as exc:
+                errors.append(f"{snap.stem}: {exc}")
+
+    # Clear the shared Kuzu DB
+    cleared_kuzu = False
+    try:
+        await asyncio.to_thread(_clear_kuzu_store)
+        cleared_kuzu = True
+    except Exception:
+        pass
+
+    # Evict the entire pipeline cache
+    evicted = evict_all_pipelines()
+
+    result: Dict = {
+        "deleted": deleted,
+        "count": len(deleted),
+        "kuzu_cleared": cleared_kuzu,
+        "pipelines_evicted": evicted,
+    }
     return result
 
 

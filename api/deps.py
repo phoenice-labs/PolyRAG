@@ -77,6 +77,33 @@ def evict_pipeline_cache(backend: str, collection: str) -> None:
             _evict_key(key)
 
 
+def evict_all_pipelines_for_collection(collection: str) -> int:
+    """Remove ALL cached pipeline entries for a collection across ALL backends.
+
+    Used when the graph for a collection is cleared — the cached pipeline holds
+    the in-memory graph store, so it must be discarded to prevent stale data.
+    Returns the number of pipeline entries evicted.
+    """
+    with _pipeline_cache_lock:
+        to_remove = [k for k in _pipeline_cache if k[1] == collection]
+        for key in to_remove:
+            _evict_key(key)
+        return len(to_remove)
+
+
+def evict_all_pipelines() -> int:
+    """Evict the entire pipeline cache (all backends, all collections).
+
+    Used when all graphs are cleared.
+    Returns the number of pipeline entries evicted.
+    """
+    with _pipeline_cache_lock:
+        keys = list(_pipeline_cache.keys())
+        for key in keys:
+            _evict_key(key)
+        return len(keys)
+
+
 def _evict_key(key: tuple) -> None:
     """Evict a single pipeline by cache key. Caller must hold _pipeline_cache_lock."""
     pipeline = _pipeline_cache.pop(key, None)
