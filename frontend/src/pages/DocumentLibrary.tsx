@@ -132,13 +132,18 @@ export default function DocumentLibrary() {
     try {
       await deleteGraph(collection)
       setMessage({ type: 'ok', text: `Knowledge Graph cleared for "${collection}"` })
-      // Remove from local state
-      setEnhanceStatus((prev) => {
-        const next = { ...prev }
-        delete next[collection]
-        return next
-      })
-      setAllCollections((prev) => prev.filter((c) => c !== collection))
+      // Mark graph_exists=false in enhanceStatus — keep the row visible so user can see the cleared status
+      setEnhanceStatus((prev) => ({
+        ...prev,
+        [collection]: {
+          collection,
+          graph_exists: false,
+          node_count: 0,
+          edge_count: 0,
+          llm_enhanced: false,
+          llm_enhanced_at: null,
+        },
+      }))
     } catch (e) {
       setMessage({ type: 'err', text: `Failed to clear graph: ${e}` })
     } finally {
@@ -147,13 +152,25 @@ export default function DocumentLibrary() {
   }
 
   const handleClearAllGraphs = async () => {
-    if (!confirm(`⚠ Clear ALL Knowledge Graphs?\n\nThis deletes ALL graph snapshots for every collection. Vectors in vector stores are NOT affected. You can rebuild by re-ingesting with ER enabled.`)) return
+    if (!confirm(`⚠ Clear ALL Knowledge Graphs?\n\nThis deletes ALL graph snapshots for every collection. Vectors in vector stores are NOT affected.\nYou can rebuild by re-ingesting with ER enabled.`)) return
     setClearingAllGraphs(true)
     try {
       const result = await deleteAllGraphs()
-      setMessage({ type: 'ok', text: `Cleared ${result.count} Knowledge Graph(s)` })
-      setEnhanceStatus({})
-      setAllCollections([])
+      setMessage({ type: 'ok', text: `Cleared ${result.count} Knowledge Graph(s). Visit the Graph page and refresh to see the updated state.` })
+      // Mark all collections as having no graph — keep rows visible so user can see cleared status
+      setEnhanceStatus((prev) => {
+        const next: Record<string, EnhanceStatus> = {}
+        Object.keys(prev).forEach((col) => {
+          next[col] = { collection: col, graph_exists: false, node_count: 0, edge_count: 0, llm_enhanced: false, llm_enhanced_at: null }
+        })
+        // Also mark any allCollections that might not be in prev yet
+        allCollections.forEach((col) => {
+          if (!next[col]) {
+            next[col] = { collection: col, graph_exists: false, node_count: 0, edge_count: 0, llm_enhanced: false, llm_enhanced_at: null }
+          }
+        })
+        return next
+      })
     } catch (e) {
       setMessage({ type: 'err', text: `Failed to clear all graphs: ${e}` })
     } finally {

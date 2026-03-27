@@ -66,6 +66,21 @@ export default function KnowledgeGraph() {
     }).catch(() => {})
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  const refreshCollections = useCallback(async () => {
+    try {
+      const names = (await api.get<string[]>('/graph')).data ?? []
+      setCollections(names)
+      // If current selection was cleared, auto-select first available
+      if (names.length > 0 && !names.includes(collection)) {
+        setCollection(names[0])
+      } else if (names.length === 0) {
+        setNodes([])
+        setLinks([])
+        setCollection('')
+      }
+    } catch {}
+  }, [collection])
+
   const loadGraph = useCallback(async () => {
     if (!collection) return
     setLoading(true)
@@ -217,6 +232,14 @@ export default function KnowledgeGraph() {
           {collections.map((c) => <option key={c} value={c}>{c}</option>)}
           {!collections.includes(collection) && collection && <option value={collection}>{collection}</option>}
         </select>
+
+        <button
+          onClick={async () => { await refreshCollections(); await loadGraph() }}
+          title="Refresh collection list and graph data from server"
+          className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200 bg-gray-800 rounded border border-gray-700 hover:border-gray-500 transition-colors"
+        >
+          ↻ Refresh
+        </button>
 
         {/* Tab switcher */}
         <div className="flex gap-1 bg-gray-800 rounded p-0.5">
