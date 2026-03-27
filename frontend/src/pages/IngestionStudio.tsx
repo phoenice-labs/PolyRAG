@@ -260,7 +260,8 @@ export default function IngestionStudio() {
     setLogs([])
     setJobResults({})
     setErUsed(false)
-    setCompletedSteps(new Set())    advanceStep('upload')
+    setCompletedSteps(new Set())
+    advanceStep('upload')
 
     // Clear existing collection in each selected backend if requested
     if (clearFirst) {
