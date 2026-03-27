@@ -134,12 +134,61 @@ class SparseNeuralIndex:
 
         Sparse vectors are appended to the on-disk store so the encoder
         need not re-run on the next server restart.
+
+        Deduplication across backends
+        ──────────────────────────────
+        The SPLADE index is collection-scoped, not backend-scoped. When the same
+        collection is ingested into multiple vector backends in parallel (e.g. all 6),
+        each pipeline calls add() independently. To avoid re-encoding the same
+        chunks 6 times:
+
+        1. If the disk snapshot already exists and contains ALL incoming doc IDs,
+           load from disk and skip encoding entirely.
+        2. If the snapshot contains SOME of the incoming IDs, encode only the new ones.
+        3. If no snapshot exists, encode all and persist.
+
+        This makes multi-backend ingestion with SPLADE as fast as single-backend.
         """
         if not documents:
             return
 
         if collection:
             self._collection = collection
+
+        # ── Fast path: load from disk if snapshot covers incoming doc IDs ──────
+        coll = self._collection
+        if coll:
+            path = self.persist_dir / coll
+            if (path / "docs.json").exists() and (path / "vectors.npz").exists():
+                if not self._docs:
+                    # Index is empty in-memory — try loading from disk first
+                    loaded = self.load(coll)
+                    if loaded:
+                        # Check coverage: are all incoming doc IDs already in the index?
+                        stored_ids = {d.id for d in self._docs}
+                        incoming_ids = {d.id for d in documents}
+                        new_ids = incoming_ids - stored_ids
+                        if not new_ids:
+                            logger.info(
+                                "SPLADE add() skipped — all %d doc(s) already in disk snapshot (collection=%s)",
+                                len(documents), coll,
+                            )
+                            return
+                        # Only encode the genuinely new documents
+                        documents = [d for d in documents if d.id in new_ids]
+                        logger.info(
+                            "SPLADE add() partial — %d new doc(s) out of %d (loaded %d from disk, collection=%s)",
+                            len(documents), len(incoming_ids), len(stored_ids), coll,
+                        )
+                else:
+                    # Index already loaded in-memory — only encode truly new docs
+                    stored_ids = {d.id for d in self._docs}
+                    documents = [d for d in documents if d.id not in stored_ids]
+                    if not documents:
+                        logger.info(
+                            "SPLADE add() skipped — all docs already indexed in-memory (collection=%s)", coll
+                        )
+                        return
 
         start_idx = len(self._docs)
         texts = [d.text for d in documents]

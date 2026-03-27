@@ -59,7 +59,7 @@ class RAGPipeline:
         self.splade_index = None
         if splade_enabled:
             from core.retrieval.splade import SparseNeuralIndex
-            splade_model = splade_cfg.get("model", "naver/splade-v3")
+            splade_model = splade_cfg.get("model", "naver/splade-cocondenser-selfdistil")
             splade_persist = splade_cfg.get("persist_dir", "./data/splade")
             self.splade_index = SparseNeuralIndex(
                 model_name=splade_model,
@@ -465,7 +465,7 @@ class RAGPipeline:
         # Batch-encode with SPLADE if disk load was not available
         if splade_docs_to_encode:
             pipeline_logger.info(
-                "SPLADE warm-start: encoding %d chunks (first startup, model may download ~400 MB)",
+                "SPLADE warm-start: encoding %d chunks (first startup, model may download ~110 MB)",
                 len(splade_docs_to_encode),
                 collection=coll,
             )
