@@ -290,7 +290,13 @@ def build_pipeline_config(
 
     # ── Model-scoped collection name ──────────────────────────────────────────
     # Appending the model slug prevents dimension mismatch across encoder switches.
-    scoped_collection = f"{collection_name}_{_model_slug(embedding_model)}"
+    # Idempotent: if the name already ends with the slug (because the UI shows
+    # and re-selects the already-scoped collection name), don't append again.
+    slug = _model_slug(embedding_model)
+    if collection_name.endswith(f"_{slug}"):
+        scoped_collection = collection_name   # already scoped — leave as-is
+    else:
+        scoped_collection = f"{collection_name}_{slug}"
 
     tmp_dir = get_tmp_dir()    # still needed for FAISS/ChromaDB index dirs
     use_docker = _detect_docker(backend)
