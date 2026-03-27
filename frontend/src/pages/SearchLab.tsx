@@ -102,18 +102,18 @@ function LLMTracePanel({ traces }: { traces: LLMTraceEntry[] }) {
               <span className="text-gray-600 text-xs shrink-0">{openIdx === i ? '▲' : '▼'}</span>
             </button>
             {openIdx === i && (
-              <div className="mt-2 space-y-2 text-xs font-mono">
+              <div className="mt-2 space-y-2 text-xs font-mono max-h-[60vh] overflow-y-auto pr-1">
                 <div className="bg-gray-800 rounded p-2">
                   <div className="text-amber-400 font-semibold mb-1 font-sans">System Prompt</div>
-                  <pre className="text-gray-300 whitespace-pre-wrap break-words">{t.system_prompt}</pre>
+                  <pre className="text-gray-300 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{t.system_prompt}</pre>
                 </div>
                 <div className="bg-gray-800 rounded p-2">
                   <div className="text-blue-400 font-semibold mb-1 font-sans">User Message / Context</div>
-                  <pre className="text-gray-300 whitespace-pre-wrap break-words">{t.user_message}</pre>
+                  <pre className="text-gray-300 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{t.user_message}</pre>
                 </div>
                 <div className="bg-gray-800 rounded p-2">
                   <div className="text-green-400 font-semibold mb-1 font-sans">LLM Response <span className="text-gray-500 font-normal">({t.latency_ms.toFixed(0)}ms)</span></div>
-                  <pre className="text-gray-200 whitespace-pre-wrap break-words">{t.response}</pre>
+                  <pre className="text-gray-200 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{t.response}</pre>
                 </div>
               </div>
             )}
@@ -228,7 +228,7 @@ function TrailsPanel({ searchCount, activeBackends }: { searchCount: number; act
                   <span className="text-gray-600 text-xs shrink-0">{expandedIdx === i ? '▲' : '▼'}</span>
                 </button>
                 {expandedIdx === i && (
-                  <div className="mt-2 space-y-2">
+                  <div className="mt-2 space-y-2 max-h-72 overflow-y-auto pr-1">
                     {/* Methods used */}
                     <div className="flex flex-wrap gap-1">
                       {Object.entries(trail.methods_used)
