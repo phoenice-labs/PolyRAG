@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { useNavigate, useBlocker } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import BackendSelector from '../components/BackendSelector/BackendSelector'
 import IngestionFlow from '../components/IngestionFlow/IngestionFlow'
 import LogStream from '../components/LogStream/LogStream'
@@ -208,14 +208,17 @@ export default function IngestionStudio() {
     try { sessionStorage.setItem('polyrag-ingest-text', t) } catch { /* ignore */ }
   }
 
-  // Block in-app navigation while an ingest stream is active so users
-  // can't accidentally lose the log stream without a warning.
-  const blocker = useBlocker(loading)
-
-  // Dismiss the "leave?" prompt automatically if loading finishes while blocked.
+  // Warn browser tab close/refresh while ingest is running.
+  // In-app navigation is intentionally NOT blocked — jobs complete on the backend
+  // regardless, and the nav badge keeps users informed.
   useEffect(() => {
-    if (!loading && blocker.state === 'blocked') blocker.reset()
-  }, [loading, blocker])
+    if (!loading) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [loading])
 
   // Step order for auto-advancing completed steps
   const STEP_ORDER = ['upload', 'chunk', 'embed', 'graph', 'upsert']
@@ -673,33 +676,14 @@ export default function IngestionStudio() {
       {/* Chunking Guide Modal */}
       {showChunkingGuide && <ChunkingGuideModal onClose={() => setShowChunkingGuide(false)} />}
 
-      {/* Navigation blocker — shown when user tries to leave while ingest is streaming */}
-      {blocker.state === 'blocked' && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-amber-700 rounded-xl p-6 w-96 shadow-2xl">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-amber-400 text-lg">⚡</span>
-              <h2 className="text-base font-semibold text-white">Ingest in progress</h2>
-            </div>
-            <p className="text-sm text-gray-300 mb-5">
-              An ingestion job is still running. Navigating away won't stop the backend job —
-              it will complete in the background. You can track progress in <strong className="text-white">⌂ Jobs</strong>.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => blocker.reset()}
-                className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
-              >
-                Stay
-              </button>
-              <button
-                onClick={() => blocker.proceed()}
-                className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm rounded-lg transition-colors"
-              >
-                Leave (job runs in background)
-              </button>
-            </div>
-          </div>
+      {/* Sticky "ingest running" info banner — reminds user the job continues if they navigate away */}
+      {loading && (
+        <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 bg-gray-800 border border-amber-700 rounded-lg px-4 py-2.5 shadow-xl text-sm text-amber-300">
+          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+          Ingest running — safe to navigate away. Track in{' '}
+          <button onClick={() => navigate('/jobs')} className="underline hover:text-white font-medium">
+            Jobs
+          </button>
         </div>
       )}
     </div>
