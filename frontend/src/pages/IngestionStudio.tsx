@@ -494,7 +494,8 @@ export default function IngestionStudio() {
             <span>
               Enable SPLADE Index
               <span className="block text-gray-600 font-normal mt-0.5">
-                Pre-encodes sparse neural vectors during ingestion (~440 MB model, first use only).
+                Pre-encodes sparse neural vectors during ingestion (~110 MB model, downloads once).
+                Uses <span className="font-mono text-gray-500">naver/splade-cocondenser-selfdistil</span> (Apache 2.0, public).
                 Enables SPLADE to contribute to RRF fusion at search time.
               </span>
             </span>

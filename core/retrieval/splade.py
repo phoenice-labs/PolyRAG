@@ -9,7 +9,10 @@ on benchmarks while staying fully lexical and interpretable.
 
 Key properties
 ──────────────
-- Model  : naver/splade-v3   (Apache 2.0, state-of-the-art sparse retrieval)
+- Model  : naver/splade-cocondenser-selfdistil  (Apache 2.0, public, non-gated)
+           ~110 MB — downloads automatically on first use from HuggingFace.
+           Alternative: naver/splade-cocondenser-ensembledistil (also public).
+           Avoid naver/splade-v3 — it is a gated repo requiring HF approval.
 - Vectors: 30 522-dim sparse float32  (dot-product similarity)
 - Search : inverted-index dot-product  (CPU-friendly, no ANN needed)
 - Persist: sparse vectors saved to disk on every add() call so the encoder
@@ -59,7 +62,7 @@ class SparseNeuralIndex:
 
     def __init__(
         self,
-        model_name: str = "naver/splade-v3",
+        model_name: str = "naver/splade-cocondenser-selfdistil",
         persist_dir: str = "./data/splade",
         batch_size: int = 8,
     ) -> None:

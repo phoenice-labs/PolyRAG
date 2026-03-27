@@ -347,7 +347,7 @@ def build_pipeline_config(
             "recall_multiplier": 3,
             "splade": {
                 "enabled": enable_splade,
-                "model": "naver/splade-v3",
+                "model": "naver/splade-cocondenser-selfdistil",  # public, non-gated, ~110 MB
                 "persist_dir": "./data/splade",
                 "splade_weight": 1.0,
                 "bm25_weight_with_splade": 0.8,
