@@ -548,6 +548,7 @@ function ABModeGuideModal({ onClose }: { onClose: () => void }) {
 
 export default function SearchLab() {
   const { selectedBackends, activeCollection, retrievalMethods } = useStore()
+
   const [query, setQuery] = useState('')
   const [topK, setTopK] = useState<number>(() => {
     try { return parseInt(localStorage.getItem('polyrag_top_k') ?? '10', 10) } catch { return 10 }
@@ -563,6 +564,40 @@ export default function SearchLab() {
   const [showSearchGuide, setShowSearchGuide] = useState(false)
   // Incremented after each successful search so TrailsPanel auto-reloads.
   const [trailSearchCount, setTrailSearchCount] = useState(0)
+  // Shown when results are restored from sessionStorage on mount.
+  const [restoredBanner, setRestoredBanner] = useState<string | null>(null)
+
+  // ── Restore previous results on mount (if < 10 minutes old) ─────────────
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('polyrag-search-snapshot')
+      if (!raw) return
+      const snap = JSON.parse(raw) as {
+        query: string
+        results: SearchResponse[]
+        topK: number
+        abMode: boolean
+        ts: number
+      }
+      const ageMs = Date.now() - (snap.ts ?? 0)
+      if (ageMs > 10 * 60 * 1000) {
+        sessionStorage.removeItem('polyrag-search-snapshot')
+        return
+      }
+      // Restore
+      setQuery(snap.query ?? '')
+      setResults(snap.results ?? [])
+      setTopK(snap.topK ?? topK)
+      setAbMode(snap.abMode ?? false)
+      setTrailSearchCount(1)  // triggers TrailsPanel to load trails
+      const ageMin = Math.round(ageMs / 60000)
+      setRestoredBanner(
+        `⚡ Restored from previous search${ageMin > 0 ? ` (${ageMin}m ago)` : ''} — ${(snap.results ?? []).reduce((n, r) => n + r.chunks.length, 0)} results`
+      )
+    } catch {
+      sessionStorage.removeItem('polyrag-search-snapshot')
+    }
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('polyrag_search_history', JSON.stringify(history))
@@ -576,6 +611,7 @@ export default function SearchLab() {
     if (!query.trim()) return
     setLoading(true)
     setError(null)
+    setRestoredBanner(null)
     try {
       const data = await search({
         query,
@@ -587,6 +623,16 @@ export default function SearchLab() {
       setResults(data)
       setHistory((prev) => [query, ...prev.filter((q) => q !== query)].slice(0, 20))
       setTrailSearchCount((c) => c + 1)
+      // Persist snapshot so results survive navigation
+      try {
+        sessionStorage.setItem('polyrag-search-snapshot', JSON.stringify({
+          query,
+          results: data,
+          topK,
+          abMode,
+          ts: Date.now(),
+        }))
+      } catch { /* sessionStorage full — non-fatal */ }
     } catch (err) {
       setError(String(err))
     } finally {
@@ -681,6 +727,23 @@ export default function SearchLab() {
 
         {error && (
           <div className="bg-red-900/30 border border-red-700 rounded p-3 text-sm text-red-300">{error}</div>
+        )}
+
+        {restoredBanner && (
+          <div className="flex items-center justify-between bg-sky-900/30 border border-sky-700 rounded px-3 py-2 text-sm text-sky-300">
+            <span>{restoredBanner}</span>
+            <button
+              onClick={() => {
+                setRestoredBanner(null)
+                setResults([])
+                setQuery('')
+                sessionStorage.removeItem('polyrag-search-snapshot')
+              }}
+              className="ml-4 text-sky-400 hover:text-white text-xs underline shrink-0"
+            >
+              Clear
+            </button>
+          </div>
         )}
 
         {/* Single scrollable column: results + all trace panels */}
