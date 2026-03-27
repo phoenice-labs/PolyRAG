@@ -297,6 +297,10 @@ async def _run_enhance_graph(
         )
         config["graph"]["llm_extraction"]["enabled"] = True
 
+        # The config may have scoped the collection name (e.g. appended _minilm).
+        # Always use the scoped name so fetch_all / snapshot target the right store.
+        scoped_collection = config.get("ingestion", {}).get("collection_name", collection)
+
         t0 = time.perf_counter()
         await store.append_log(job_id, "[enhance] Loading pipeline...")
         pipeline = await asyncio.to_thread(create_pipeline, config)
@@ -324,11 +328,11 @@ async def _run_enhance_graph(
         else:
             await store.append_log(job_id, "[enhance] No existing graph — building from scratch")
 
-        # Fetch chunks from the vector store
-        await store.append_log(job_id, f"[enhance] Fetching up to {max_chunks} chunks from '{collection}'...")
+        # Fetch chunks using the scoped collection name (matches the actual store key)
+        await store.append_log(job_id, f"[enhance] Fetching up to {max_chunks} chunks from '{scoped_collection}'...")
         try:
             raw_chunks = await asyncio.to_thread(
-                lambda: pipeline.store.fetch_all(collection, limit=max_chunks)
+                lambda: pipeline.store.fetch_all(scoped_collection, limit=max_chunks)
             )
         except Exception as exc:
             await store.append_log(job_id, f"[enhance] ERROR fetching chunks: {exc}")
@@ -338,7 +342,7 @@ async def _run_enhance_graph(
         if not raw_chunks:
             await store.append_log(
                 job_id,
-                "[enhance] No chunks found in this collection. Ingest documents first, then run Enhance Graph."
+                f"[enhance] No chunks found in '{scoped_collection}'. Ingest documents first, then run Enhance Graph."
             )
             await store.update_job(job_id, status="error", error="No chunks found")
             return
@@ -377,8 +381,8 @@ async def _run_enhance_graph(
                 )
 
         # Save updated graph snapshot; stamp mode + enhanced flag
-        await asyncio.to_thread(pipeline._save_graph_snapshot, collection)
-        snapshot_path = _GRAPH_DIR / f"{collection}.json"
+        await asyncio.to_thread(pipeline._save_graph_snapshot, scoped_collection)
+        snapshot_path = _GRAPH_DIR / f"{scoped_collection}.json"
         if snapshot_path.exists():
             try:
                 snap = json.loads(snapshot_path.read_text(encoding="utf-8"))
