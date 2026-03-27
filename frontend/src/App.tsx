@@ -219,19 +219,20 @@ function AppShell() {
   })
 
   // Keep Zustand store in sync: clear jobs that are no longer running on the server.
-  const runningIds = new Set((runningJobs ?? []).map((j) => j.id))
-  const storedJobs = Object.entries(activeIngestJobs)
-  for (const [backend, jobId] of storedJobs) {
-    if (activeIngestJobs[backend] && runningJobs !== undefined && !runningIds.has(jobId)) {
-      // Job finished — remove from active store
-      const next = { ...activeIngestJobs }
-      delete next[backend]
-      if (Object.keys(next).length !== Object.keys(activeIngestJobs).length) {
-        clearActiveIngestJobs()
-        for (const [b, id] of Object.entries(next)) setActiveIngestJob(b, id)
-      }
+  // Must be in a useEffect — calling setState during render causes React warning.
+  useEffect(() => {
+    if (runningJobs === undefined) return
+    const runningIds = new Set(runningJobs.map((j) => j.id))
+    const next: Record<string, string> = {}
+    for (const [backend, jobId] of Object.entries(activeIngestJobs)) {
+      if (runningIds.has(jobId)) next[backend] = jobId
     }
-  }
+    if (Object.keys(next).length !== Object.keys(activeIngestJobs).length) {
+      clearActiveIngestJobs()
+      for (const [b, id] of Object.entries(next)) setActiveIngestJob(b, id)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningJobs])
 
   const runningCount = runningJobs?.length ?? 0
 
