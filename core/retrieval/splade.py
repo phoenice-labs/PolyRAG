@@ -99,8 +99,27 @@ class SparseNeuralIndex:
     # ── Sparse vector helpers ─────────────────────────────────────────────────
 
     def _to_sparse_dict(self, vec) -> Dict[int, float]:
-        """Convert a dense numpy row [vocab_size] to {term_id: weight} dict."""
-        arr = np.asarray(vec, dtype=np.float32)
+        """Convert a SPLADE output vector to {term_id: weight} dict.
+
+        Handles three possible output types from SparseEncoder:
+          1. A true sparse PyTorch tensor (COO/CSR layout) — call .to_dense() first
+          2. A dense PyTorch tensor — .numpy() directly
+          3. A numpy array or array-like — np.asarray() directly
+        """
+        try:
+            import torch  # type: ignore[import]
+            if isinstance(vec, torch.Tensor):
+                if vec.is_sparse:
+                    vec = vec.to_dense()
+                arr = vec.detach().cpu().numpy().astype(np.float32)
+            else:
+                arr = np.asarray(vec, dtype=np.float32)
+        except ImportError:
+            arr = np.asarray(vec, dtype=np.float32)
+
+        if arr.ndim > 1:
+            arr = arr.squeeze()
+
         nonzero = np.flatnonzero(arr)
         return {int(i): float(arr[i]) for i in nonzero if arr[i] > 0}
 
