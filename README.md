@@ -22,14 +22,39 @@ Switch from ChromaDB (local dev) to Weaviate (production cluster) by changing **
 
 ## Supported Vector Backends
 
-| Backend | Local / No-Server | Native Hybrid Search | Persistence |
-|---|:---:|:---:|:---:|
-| **ChromaDB** | ✅ in-memory | ❌ emulated | ✅ |
-| **FAISS** | ✅ in-memory | ❌ emulated | ✅ (file) |
-| **Qdrant** | ✅ in-memory | ✅ native | ✅ |
-| **Weaviate** | ✅ embedded | ✅ native | ✅ |
-| **Milvus** | ✅ Lite (Linux/macOS) | ✅ native | ✅ |
-| **PGVector** | ❌ needs PostgreSQL | ✅ (tsvector) | ✅ |
+All backends are configured via a single `base_url` in `config/config.yaml` (or Settings UI) — point to localhost Docker, a remote server, or a managed cloud service with **zero code changes**.
+
+| Backend | In-Process | Docker (Desktop / Server) | Cloud / Remote | Native Hybrid | Persistence |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **ChromaDB** | ✅ | ✅ | ✅ (Chroma Cloud) | ❌ emulated via RRF | ✅ |
+| **FAISS** | ✅ | ❌ (file-based only) | ❌ | ❌ emulated via RRF | ✅ (file) |
+| **Qdrant** | ✅ in-memory | ✅ `localhost:6333` | ✅ Qdrant Cloud | ✅ native | ✅ |
+| **Weaviate** | ✅ embedded | ✅ `localhost:8080` | ✅ Weaviate Cloud | ✅ native | ✅ |
+| **Milvus** | ✅ Lite (Linux/macOS) | ✅ `localhost:19530` | ✅ Zilliz Cloud | ✅ native | ✅ |
+| **PGVector** | ❌ | ✅ `localhost:5432` | ✅ Any PostgreSQL host | ✅ (tsvector) | ✅ |
+
+### Switching Backends
+
+Change one line in `config/config.yaml` — or use the Settings UI in the browser:
+
+```yaml
+store:
+  backend: qdrant          # chromadb | faiss | qdrant | weaviate | milvus | pgvector
+  # For Docker / remote, set the connection URL per backend:
+  qdrant_url: http://localhost:6333
+  weaviate_url: http://localhost:8080
+  milvus_uri: http://localhost:19530
+  pgvector_dsn: postgresql://postgres:postgres@localhost:5432/polyrag
+```
+
+### Docker Quick Start (Windows Desktop Docker)
+
+```powershell
+# Start all optional backends with one command
+docker compose -f docker-compose.polyrag.yml up -d
+```
+
+This brings up Qdrant, Weaviate, Milvus, and PGVector. ChromaDB and FAISS run in-process — no Docker needed.
 
 ---
 
@@ -352,36 +377,6 @@ Tests use **Project Gutenberg's Complete Works of William Shakespeare**
 
 Downloaded automatically on first test run and cached to `data/shakespeare.txt`.
 No Gutenberg account required. Text is in the public domain.
-
----
-
-## Docker (for server-based backends)
-
-```yaml
-# docker-compose.yml  —  run locally for Qdrant / Weaviate / Milvus / PGVector
-services:
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports: ["6333:6333"]
-
-  weaviate:
-    image: semitechnologies/weaviate:latest
-    ports: ["8080:8080", "50051:50051"]
-    environment:
-      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
-      DEFAULT_VECTORIZER_MODULE: none
-
-  milvus:
-    image: milvusdb/milvus:latest
-    ports: ["19530:19530"]
-
-  pgvector:
-    image: pgvector/pgvector:pg16
-    ports: ["5432:5432"]
-    environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: polyrag
-```
 
 ---
 
