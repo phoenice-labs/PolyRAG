@@ -224,6 +224,8 @@ class RAGPipeline:
             model=llm_cfg.get("model", "mistralai/ministral-3b"),
             temperature=llm_cfg.get("temperature", 0.2),
             max_tokens=llm_cfg.get("max_tokens", 512),
+            api_key=llm_cfg.get("api_key", ""),
+            provider=llm_cfg.get("provider", "lm_studio"),
         )
         self._context_tracker = ConversationContextTracker(
             max_turns=llm_cfg.get("context_turns", 5)

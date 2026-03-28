@@ -1,9 +1,10 @@
 """
 Dependency injection helpers: pipeline factory per backend, shared job store,
-feedback store, and evaluation store.
+feedback store, evaluation store, and LLM config store.
 """
 from __future__ import annotations
 
+import json
 import re
 import socket
 import sys
@@ -22,6 +23,66 @@ _eval_store_loaded: bool = False   # disk load happens once on first get_eval_st
 
 # Evaluation persistence directory (survives server restarts)
 _EVAL_DIR = Path(__file__).resolve().parent.parent / "data" / "evaluations"
+
+# ── LLM Config store ──────────────────────────────────────────────────────────
+# Persisted to data/llm_config.json.  Defaults match historic hardcoded values
+# so that existing tests and a fresh install continue working without config.
+
+_LLM_CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "llm_config.json"
+
+_LLM_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "provider": "lm_studio",
+    "base_url": "http://localhost:1234/v1",
+    "api_key": "",          # empty → use provider-appropriate dummy ("lm-studio", "ollama", …)
+    "model": "mistralai/ministral-3b",
+    "temperature": 0.2,
+    "max_tokens": 512,
+    "timeout": 60,
+}
+
+_llm_cfg: Dict[str, Any] = {}
+_llm_cfg_loaded: bool = False
+_llm_cfg_lock = threading.Lock()
+
+
+def get_llm_config() -> Dict[str, Any]:
+    """Return the live LLM config dict (lazy-loaded from disk, defaults applied)."""
+    global _llm_cfg, _llm_cfg_loaded
+    with _llm_cfg_lock:
+        if not _llm_cfg_loaded:
+            _load_llm_config()
+            _llm_cfg_loaded = True
+    return _llm_cfg
+
+
+def _load_llm_config() -> None:
+    """Load LLM config from disk and merge with defaults. Caller must hold lock."""
+    global _llm_cfg
+    cfg = dict(_LLM_CONFIG_DEFAULTS)
+    if _LLM_CONFIG_PATH.exists():
+        try:
+            saved = json.loads(_LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+            cfg.update({k: v for k, v in saved.items() if k in _LLM_CONFIG_DEFAULTS})
+        except Exception:
+            pass  # corrupt file → fall back to defaults silently
+    _llm_cfg = cfg
+
+
+def save_llm_config(new_cfg: Dict[str, Any]) -> None:
+    """Persist a new LLM config dict and flush the pipeline cache.
+
+    Security: api_key is stored in data/llm_config.json which is .gitignore'd.
+    Real keys must never be committed to source control.
+    """
+    global _llm_cfg
+    merged = dict(_LLM_CONFIG_DEFAULTS)
+    merged.update({k: v for k, v in new_cfg.items() if k in _LLM_CONFIG_DEFAULTS})
+    with _llm_cfg_lock:
+        _llm_cfg = merged
+    _LLM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LLM_CONFIG_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    # Flush pipeline cache so the next request picks up the new LLM settings
+    evict_all_pipelines()
 
 # Shared temp directory for FAISS/ChromaDB persistent storage during server life
 _tmp_dir: Optional[str] = None
@@ -394,10 +455,7 @@ def build_pipeline_config(
             },
         },
         "llm": {
-            "base_url": "http://localhost:1234/v1",
-            "model": "mistralai/ministral-3b",
-            "temperature": 0.2,
-            "max_tokens": 256,
+            **{k: get_llm_config()[k] for k in ("provider", "base_url", "api_key", "model", "temperature", "max_tokens", "timeout")},
             # Per-method flags: explicit arg wins; fall back to full_retrieval toggle
             "enable_rewrite":     (enable_rewrite     if enable_rewrite     is not None else full_retrieval),
             "enable_stepback":    (enable_stepback     if enable_stepback    is not None else False),

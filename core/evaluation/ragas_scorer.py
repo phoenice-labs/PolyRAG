@@ -80,12 +80,24 @@ class RagasScorer:
 
     def __init__(
         self,
-        lm_studio_url: str = "http://localhost:1234/v1",
-        lm_studio_model: str = "local-model",
+        lm_studio_url: str = "",          # empty → read from live LLM config store
+        lm_studio_model: str = "",        # empty → read from live LLM config store
         embed_model: str = "all-MiniLM-L6-v2",
     ) -> None:
-        self._url = lm_studio_url
-        self._model = lm_studio_model
+        # Resolve base_url and model from the live config store if not explicitly passed
+        _llm_cfg: dict = {}
+        try:
+            from api.deps import get_llm_config
+            _llm_cfg = get_llm_config()
+        except Exception:
+            pass
+        self._url = lm_studio_url or _llm_cfg.get("base_url", "http://localhost:1234/v1")
+        self._model = lm_studio_model or _llm_cfg.get("model", "local-model")
+        self._provider = _llm_cfg.get("provider", "lm_studio")
+        # Use configured api_key; local providers that don't need a real key get a
+        # non-empty placeholder so the OpenAI SDK doesn't reject the request.
+        _raw_key = _llm_cfg.get("api_key", "")
+        self._api_key = _raw_key or (self._provider.replace("_", "-") if self._provider in ("lm_studio", "ollama") else "")
         self._embed_model = embed_model
         self._llm = None
         self._embeddings = None
@@ -94,14 +106,14 @@ class RagasScorer:
         self._try_init()
 
     def _try_init(self) -> None:
-        """Lazy-init LangChain wrappers — fails gracefully if LM Studio is offline."""
+        """Lazy-init LangChain wrappers — fails gracefully if LLM is offline."""
         try:
             from langchain_openai import ChatOpenAI
             from ragas.llms import LangchainLLMWrapper
 
             chat = ChatOpenAI(
                 base_url=self._url,
-                api_key="lm-studio",
+                api_key=self._api_key,
                 model=self._model,
                 temperature=0,
                 timeout=60,
@@ -113,15 +125,18 @@ class RagasScorer:
             self._ready = False
 
     def is_available(self) -> bool:
-        """Returns True if LM Studio is reachable and RAGAS can run."""
+        """Returns True if the configured LLM endpoint is reachable and RAGAS can run."""
         if not self._ready:
             return False
         try:
             import requests
+            base = self._url.rstrip("/")
+            if not base.endswith("/v1"):
+                base = base + "/v1"
             resp = requests.get(
-                self._url.rstrip("/v1").rstrip("/") + "/v1/models",
+                f"{base}/models",
                 timeout=3,
-                headers={"Authorization": "Bearer lm-studio"},
+                headers={"Authorization": f"Bearer {self._api_key}"},
             )
             return resp.status_code == 200
         except Exception:
@@ -199,13 +214,13 @@ class RagasScorer:
                 context_precision=_safe("context_precision"),
                 context_recall=_safe("context_recall"),
                 scorer=f"ragas-{_ragas_version()}",
-                llm="lm-studio",
+                llm=self._provider,
             )
 
         except Exception as exc:
             return RagasResult(
                 scorer="ragas-error",
-                llm="lm-studio",
+                llm=self._provider,
                 error=str(exc),
             )
 
@@ -265,13 +280,13 @@ class RagasScorer:
                     context_precision=_safe("context_precision"),
                     context_recall=_safe("context_recall"),
                     scorer=f"ragas-{ver}",
-                    llm="lm-studio",
+                    llm=self._provider,
                 ))
             return results
 
         except Exception as exc:
             return [
-                RagasResult(scorer="ragas-error", llm="lm-studio", error=str(exc))
+                RagasResult(scorer="ragas-error", llm=self._provider, error=str(exc))
                 for _ in questions
             ]
 

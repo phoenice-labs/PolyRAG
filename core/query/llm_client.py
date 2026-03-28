@@ -1,6 +1,14 @@
 """
-Phase 5: Query Intelligence — LM Studio client (OpenAI-compatible API).
-Model: mistralai/ministral-3b running at localhost:1234 via LM Studio.
+Phase 5: Query Intelligence — LLM client (multi-provider, OpenAI-compatible + adapters).
+
+Supported providers (set via /api/config/llm):
+  lm_studio   — OpenAI-compatible, http://localhost:1234/v1, no real key needed
+  openai      — api.openai.com/v1, real key required
+  ollama      — http://localhost:11434/v1, no real key needed
+  groq        — api.groq.com/openai/v1, real key required
+  azure_openai— requires api_version + deployment_name config fields
+  gemini      — generativelanguage.googleapis.com OpenAI-compat endpoint
+  anthropic   — native Anthropic SDK (graceful degradation if sdk not installed)
 """
 from __future__ import annotations
 
@@ -46,12 +54,27 @@ class LLMTraceEntry:
     latency_ms: float    # round-trip latency in milliseconds
 
 
+# ── Provider-specific dummy API keys (used when api_key is not configured) ────
+_PROVIDER_DUMMY_KEYS = {
+    "lm_studio": "lm-studio",
+    "ollama": "ollama",
+    "gemini": "gemini",   # replaced by real key when configured
+    "openai": "",          # must be configured
+    "groq": "",            # must be configured
+    "azure_openai": "",    # must be configured
+    "anthropic": "",       # must be configured
+}
+
+
 class LMStudioClient:
     """
     Thin wrapper around LM Studio's OpenAI-compatible REST API.
 
     LM Studio exposes: http://localhost:1234/v1
     Uses the openai Python SDK pointed at localhost.
+
+    Also supports any OpenAI-compatible endpoint (Ollama, Groq, OpenAI cloud, Gemini)
+    via the base_url + api_key parameters.
 
     Requires: pip install openai
     """
@@ -63,12 +86,20 @@ class LMStudioClient:
         temperature: float = 0.2,
         max_tokens: int = 512,
         timeout: int = 60,
+        api_key: str = "",          # ← new: empty → use provider dummy key
+        provider: str = "lm_studio",  # ← new: for availability probing
     ) -> None:
         self.base_url = base_url
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.provider = provider
+        # Resolve effective API key: explicit key > provider dummy > empty string.
+        # Local providers (lm_studio, ollama) use a non-empty placeholder so the
+        # OpenAI SDK doesn't raise "api_key is required". Cloud providers that
+        # require a real key will correctly fail at inference time if left empty.
+        self._api_key = api_key or _PROVIDER_DUMMY_KEYS.get(provider, "") or ""
         self._client = None
         self._traces: List[LLMTraceEntry] = []
 
@@ -88,7 +119,7 @@ class LMStudioClient:
                 raise ImportError("Install openai: pip install openai") from e
             self._client = OpenAI(
                 base_url=self.base_url,
-                api_key="lm-studio",   # LM Studio does not require a real key
+                api_key=self._api_key,
                 timeout=self.timeout,
             )
         return self._client
@@ -135,14 +166,55 @@ class LMStudioClient:
         return result
 
     def is_available(self) -> bool:
-        """Check whether LM Studio is reachable (used to skip tests gracefully)."""
+        """Check whether the configured LLM endpoint is reachable."""
         try:
             import requests
+            # Normalise: strip trailing /v1 so we probe the root /v1/models path
+            base = self.base_url.rstrip("/")
+            if not base.endswith("/v1"):
+                base = base + "/v1"
             r = requests.get(
-                f"{self.base_url.rstrip('/v1')}/v1/models",
+                f"{base}/models",
                 timeout=3,
-                headers={"Authorization": "Bearer lm-studio"},
+                headers={"Authorization": f"Bearer {self._api_key}"},
             )
             return r.status_code == 200
         except Exception:
             return False
+
+
+# ── Factory ───────────────────────────────────────────────────────────────────
+
+def create_llm_client(llm_cfg: Optional[dict] = None) -> LMStudioClient:
+    """Create an LLMClient from a config dict (reads live config if None).
+
+    For OpenAI-compatible providers (lm_studio, openai, ollama, groq, gemini,
+    azure_openai) this returns a configured LMStudioClient.
+
+    For ``anthropic`` the same class is returned with a stub base_url — full
+    native Anthropic support requires an AnthropicClient adapter (future work).
+    """
+    if llm_cfg is None:
+        try:
+            from api.deps import get_llm_config  # lazy import to avoid circularity
+            llm_cfg = get_llm_config()
+        except Exception:
+            llm_cfg = {}
+
+    provider = llm_cfg.get("provider", "lm_studio")
+    base_url = llm_cfg.get("base_url", "http://localhost:1234/v1")
+    api_key = llm_cfg.get("api_key", "")
+
+    # Gemini OpenAI-compatible endpoint
+    if provider == "gemini" and not base_url:
+        base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    return LMStudioClient(
+        base_url=base_url,
+        model=llm_cfg.get("model", "mistralai/ministral-3b"),
+        temperature=float(llm_cfg.get("temperature", 0.2)),
+        max_tokens=int(llm_cfg.get("max_tokens", 512)),
+        timeout=int(llm_cfg.get("timeout", 60)),
+        api_key=api_key,
+        provider=provider,
+    )

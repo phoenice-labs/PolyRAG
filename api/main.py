@@ -31,6 +31,7 @@ from api.routers import (
     retrieval_trails as retrieval_trails_router,
     system as system_router,
     purge as purge_router,
+    config as config_router,
 )
 
 app = FastAPI(
@@ -110,6 +111,7 @@ app.include_router(traces_router.router, prefix="/api")
 app.include_router(retrieval_trails_router.router, prefix="/api")
 app.include_router(system_router.router, prefix="/api")
 app.include_router(purge_router.router, prefix="/api")
+app.include_router(config_router.router, prefix="/api")
 
 
 # ── Health endpoint ───────────────────────────────────────────────────────────
