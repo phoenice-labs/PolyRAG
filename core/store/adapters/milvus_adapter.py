@@ -200,12 +200,13 @@ class MilvusAdapter(VectorStoreBase):
 
     # ── Bulk fetch ────────────────────────────────────────────────────────────
 
-    def fetch_all(self, collection: str, limit: int = 1000) -> list:
+    def fetch_all(self, collection: str, limit: int = 1000, offset: int = 0) -> list:
         """Fetch up to ``limit`` documents (id + text + metadata) with reconnect on closed-channel errors.
 
         Returns a list of dicts, each with keys: ``id``, ``text``, ``metadata``.
         The ``metadata`` dict contains all dynamic fields stored at upsert time
         (e.g. parent_id, is_parent, doc_id, start_char, end_char, section_title).
+        Milvus enforces (offset + limit) <= 16384.
         """
         def _do_query():
             rows = self.client.query(
@@ -213,6 +214,7 @@ class MilvusAdapter(VectorStoreBase):
                 filter="",
                 output_fields=["*"],
                 limit=limit,
+                offset=offset,
             )
             results = []
             for row in rows:

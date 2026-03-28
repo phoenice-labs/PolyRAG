@@ -1,9 +1,10 @@
 """
 Dependency injection helpers: pipeline factory per backend, shared job store,
-feedback store, and evaluation store.
+feedback store, evaluation store, and LLM config store.
 """
 from __future__ import annotations
 
+import json
 import re
 import socket
 import sys
@@ -18,6 +19,70 @@ from api.jobs import JobStore
 _job_store: Optional[JobStore] = None
 _feedback_store: List[Dict[str, Any]] = []
 _eval_store: Dict[str, Any] = {}
+_eval_store_loaded: bool = False   # disk load happens once on first get_eval_store() call
+
+# Evaluation persistence directory (survives server restarts)
+_EVAL_DIR = Path(__file__).resolve().parent.parent / "data" / "evaluations"
+
+# ── LLM Config store ──────────────────────────────────────────────────────────
+# Persisted to data/llm_config.json.  Defaults match historic hardcoded values
+# so that existing tests and a fresh install continue working without config.
+
+_LLM_CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "llm_config.json"
+
+_LLM_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "provider": "lm_studio",
+    "base_url": "http://localhost:1234/v1",
+    "api_key": "",          # empty → use provider-appropriate dummy ("lm-studio", "ollama", …)
+    "model": "mistralai/ministral-3b",
+    "temperature": 0.2,
+    "max_tokens": 512,
+    "timeout": 60,
+}
+
+_llm_cfg: Dict[str, Any] = {}
+_llm_cfg_loaded: bool = False
+_llm_cfg_lock = threading.Lock()
+
+
+def get_llm_config() -> Dict[str, Any]:
+    """Return the live LLM config dict (lazy-loaded from disk, defaults applied)."""
+    global _llm_cfg, _llm_cfg_loaded
+    with _llm_cfg_lock:
+        if not _llm_cfg_loaded:
+            _load_llm_config()
+            _llm_cfg_loaded = True
+    return _llm_cfg
+
+
+def _load_llm_config() -> None:
+    """Load LLM config from disk and merge with defaults. Caller must hold lock."""
+    global _llm_cfg
+    cfg = dict(_LLM_CONFIG_DEFAULTS)
+    if _LLM_CONFIG_PATH.exists():
+        try:
+            saved = json.loads(_LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+            cfg.update({k: v for k, v in saved.items() if k in _LLM_CONFIG_DEFAULTS})
+        except Exception:
+            pass  # corrupt file → fall back to defaults silently
+    _llm_cfg = cfg
+
+
+def save_llm_config(new_cfg: Dict[str, Any]) -> None:
+    """Persist a new LLM config dict and flush the pipeline cache.
+
+    Security: api_key is stored in data/llm_config.json which is .gitignore'd.
+    Real keys must never be committed to source control.
+    """
+    global _llm_cfg
+    merged = dict(_LLM_CONFIG_DEFAULTS)
+    merged.update({k: v for k, v in new_cfg.items() if k in _LLM_CONFIG_DEFAULTS})
+    with _llm_cfg_lock:
+        _llm_cfg = merged
+    _LLM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LLM_CONFIG_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    # Flush pipeline cache so the next request picks up the new LLM settings
+    evict_all_pipelines()
 
 # Shared temp directory for FAISS/ChromaDB persistent storage during server life
 _tmp_dir: Optional[str] = None
@@ -26,7 +91,15 @@ _tmp_dir: Optional[str] = None
 # Pipelines are expensive to create (loads embedder, cross-encoder, etc.)
 # Safe to share for read-only operations; each request uses begin_request/get_traces
 # which are protected by per-pipeline lock below.
-_pipeline_cache: Dict[tuple, Any] = {}
+#
+# LRU eviction: when the cache reaches MAX_CACHED_PIPELINES, the least-recently-used
+# entry is stopped and removed before a new pipeline is added.
+# This prevents unbounded memory growth when developers switch between many
+# (backend, collection, model) combinations during experimentation.
+MAX_CACHED_PIPELINES: int = 10  # ~10 distinct (backend × collection × model) combos
+
+_pipeline_cache: Dict[tuple, Any] = {}          # cache_key → RAGPipeline
+_pipeline_lru: "list[tuple]" = []               # ordered list: [oldest, ..., newest]
 _pipeline_cache_lock = threading.Lock()
 
 # ── Embedding model helpers ───────────────────────────────────────────────────
@@ -66,7 +139,80 @@ def evict_pipeline_cache(backend: str, collection: str) -> None:
     with _pipeline_cache_lock:
         to_remove = [k for k in _pipeline_cache if k[0] == backend and k[1] == collection]
         for key in to_remove:
-            _pipeline_cache.pop(key, None)
+            _evict_key(key)
+
+
+def evict_all_pipelines_for_collection(collection: str) -> int:
+    """Remove ALL cached pipeline entries for a collection across ALL backends.
+
+    Used when the graph for a collection is cleared — the cached pipeline holds
+    the in-memory graph store, so it must be discarded to prevent stale data.
+    Returns the number of pipeline entries evicted.
+    """
+    with _pipeline_cache_lock:
+        to_remove = [k for k in _pipeline_cache if k[1] == collection]
+        for key in to_remove:
+            _evict_key(key)
+        return len(to_remove)
+
+
+def evict_all_pipelines() -> int:
+    """Evict the entire pipeline cache (all backends, all collections).
+
+    Used when all graphs are cleared.
+    Returns the number of pipeline entries evicted.
+    """
+    with _pipeline_cache_lock:
+        keys = list(_pipeline_cache.keys())
+        for key in keys:
+            _evict_key(key)
+        return len(keys)
+
+
+def _evict_key(key: tuple) -> None:
+    """Evict a single pipeline by cache key. Caller must hold _pipeline_cache_lock."""
+    pipeline = _pipeline_cache.pop(key, None)
+    if pipeline is not None:
+        try:
+            pipeline.stop()
+        except Exception:
+            pass
+    if key in _pipeline_lru:
+        _pipeline_lru.remove(key)
+
+
+def _touch_lru(key: tuple) -> None:
+    """Mark key as most-recently-used. Caller must hold _pipeline_cache_lock."""
+    if key in _pipeline_lru:
+        _pipeline_lru.remove(key)
+    _pipeline_lru.append(key)
+
+
+def _enforce_lru_limit() -> None:
+    """Evict the LRU pipeline if the cache is at capacity. Caller must hold lock."""
+    while len(_pipeline_cache) >= MAX_CACHED_PIPELINES:
+        if not _pipeline_lru:
+            break
+        oldest_key = _pipeline_lru[0]
+        _evict_key(oldest_key)
+
+
+def get_pipeline_cache_info() -> Dict[str, Any]:
+    """Return a snapshot of the current pipeline cache state (for /api/system/cache)."""
+    with _pipeline_cache_lock:
+        entries = []
+        for i, key in enumerate(_pipeline_lru):
+            entries.append({
+                "rank": i + 1,       # 1 = oldest (next to evict), N = newest
+                "backend": key[0],
+                "collection": key[1],
+                "embedding_model": key[9] if len(key) > 9 else "unknown",
+            })
+        return {
+            "max_pipelines": MAX_CACHED_PIPELINES,
+            "cached": len(_pipeline_cache),
+            "entries": entries,
+        }
 
 
 def get_feedback_store() -> List[Dict[str, Any]]:
@@ -74,7 +220,37 @@ def get_feedback_store() -> List[Dict[str, Any]]:
 
 
 def get_eval_store() -> Dict[str, Any]:
+    global _eval_store, _eval_store_loaded
+    if not _eval_store_loaded:
+        _load_eval_store()
+        _eval_store_loaded = True
     return _eval_store
+
+
+def _load_eval_store() -> None:
+    """Load all persisted evaluation results from disk into the in-memory store."""
+    import json
+    if not _EVAL_DIR.exists():
+        return
+    for path in _EVAL_DIR.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if path.stem not in _eval_store:
+                _eval_store[path.stem] = data
+        except Exception:
+            pass  # corrupt file — skip silently
+
+
+def persist_eval(eval_id: str, data: Dict[str, Any]) -> None:
+    """Write one evaluation result to disk. Best-effort — never raises."""
+    import json
+    try:
+        _EVAL_DIR.mkdir(parents=True, exist_ok=True)
+        (_EVAL_DIR / f"{eval_id}.json").write_text(
+            json.dumps(data, default=str), encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 
 def get_tmp_dir() -> str:
@@ -209,7 +385,13 @@ def build_pipeline_config(
 
     # ── Model-scoped collection name ──────────────────────────────────────────
     # Appending the model slug prevents dimension mismatch across encoder switches.
-    scoped_collection = f"{collection_name}_{_model_slug(embedding_model)}"
+    # Idempotent: if the name already ends with the slug (because the UI shows
+    # and re-selects the already-scoped collection name), don't append again.
+    slug = _model_slug(embedding_model)
+    if collection_name.endswith(f"_{slug}"):
+        scoped_collection = collection_name   # already scoped — leave as-is
+    else:
+        scoped_collection = f"{collection_name}_{slug}"
 
     tmp_dir = get_tmp_dir()    # still needed for FAISS/ChromaDB index dirs
     use_docker = _detect_docker(backend)
@@ -266,17 +448,14 @@ def build_pipeline_config(
             "recall_multiplier": 3,
             "splade": {
                 "enabled": enable_splade,
-                "model": "naver/splade-v3",
+                "model": "naver/splade-cocondenser-selfdistil",  # public, non-gated, ~110 MB
                 "persist_dir": "./data/splade",
                 "splade_weight": 1.0,
                 "bm25_weight_with_splade": 0.8,
             },
         },
         "llm": {
-            "base_url": "http://localhost:1234/v1",
-            "model": "mistralai/ministral-3b",
-            "temperature": 0.2,
-            "max_tokens": 256,
+            **{k: get_llm_config()[k] for k in ("provider", "base_url", "api_key", "model", "temperature", "max_tokens", "timeout")},
             # Per-method flags: explicit arg wins; fall back to full_retrieval toggle
             "enable_rewrite":     (enable_rewrite     if enable_rewrite     is not None else full_retrieval),
             "enable_stepback":    (enable_stepback     if enable_stepback    is not None else False),
@@ -334,6 +513,8 @@ def create_pipeline(config: Dict[str, Any]):
     if cache_key in _pipeline_cache:
         # Reconfigure lightweight LLM flags on the cached pipeline without rebuilding
         pipeline = _pipeline_cache[cache_key]
+        with _pipeline_cache_lock:
+            _touch_lru(cache_key)
         _reconfigure_llm_flags(pipeline, config)
         return pipeline
 
@@ -343,13 +524,81 @@ def create_pipeline(config: Dict[str, Any]):
             if str(root) not in sys.path:
                 sys.path.insert(0, str(root))
 
+            _enforce_lru_limit()  # evict LRU entry if at capacity
+
             from orchestrator.pipeline import RAGPipeline
             pipeline = RAGPipeline(config)
             pipeline.start()
             _pipeline_cache[cache_key] = pipeline
+            _touch_lru(cache_key)
+            # Persist BM25 snapshot after warm-start for faster future restarts
+            _save_bm25_snapshot(cache_key, pipeline)
 
     _reconfigure_llm_flags(_pipeline_cache[cache_key], config)
     return _pipeline_cache[cache_key]
+
+
+# ── BM25 index persistence ────────────────────────────────────────────────────
+# The BM25 warm-start (pipeline._rebuild_bm25_from_store) fetches all chunk texts
+# from the vector store on every process start, which can be slow for large collections.
+#
+# Strategy: after warm-start completes, snapshot the BM25 docs list to
+#   data/bm25/{cache_key_hash}.pkl
+# This provides a disk-side view of the index state (useful for diagnostics and as
+# the foundation for a future "skip rebuild if pkl is fresh" optimisation).
+#
+# We do NOT modify orchestrator/pipeline.py to avoid touching the protected core.
+
+_BM25_DIR = Path("data/bm25")
+
+
+def _bm25_pkl_path(cache_key: tuple) -> Path:
+    """Deterministic pkl path for a given cache key."""
+    import hashlib
+    key_hash = hashlib.md5(str(cache_key).encode()).hexdigest()[:16]
+    return _BM25_DIR / f"{key_hash}.pkl"
+
+
+def _save_bm25_snapshot(cache_key: tuple, pipeline) -> None:
+    """
+    Serialize the pipeline's BM25 docs list to disk after warm-start.
+    Non-blocking — silently swallows all errors (persistence is best-effort).
+
+    The snapshot path: data/bm25/{cache_key_hash}.pkl
+    """
+    try:
+        import pickle
+
+        bm25_index = getattr(pipeline, "bm25_index", None)
+        if bm25_index is None:
+            return
+        docs = getattr(bm25_index, "_docs", [])
+        if not docs:
+            return
+
+        _BM25_DIR.mkdir(parents=True, exist_ok=True)
+        pkl_path = _bm25_pkl_path(cache_key)
+        with pkl_path.open("wb") as f:
+            pickle.dump(docs, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass  # persistence is best-effort; warm-start already succeeded
+
+
+def get_bm25_snapshot_info() -> list:
+    """
+    Return metadata about on-disk BM25 snapshots for /api/system/health.
+    """
+    if not _BM25_DIR.exists():
+        return []
+    snapshots = []
+    for pkl in _BM25_DIR.glob("*.pkl"):
+        stat = pkl.stat()
+        snapshots.append({
+            "file": pkl.name,
+            "size_kb": round(stat.st_size / 1024, 1),
+            "modified": stat.st_mtime,
+        })
+    return snapshots
 
 
 def _reconfigure_llm_flags(pipeline, config: dict) -> None:

@@ -82,7 +82,7 @@ def hamlet_pipeline(hamlet_text):
         chunk_size=400,
         chunk_strategy="sentence",
         overlap=50,
-        enable_er=False,
+        enable_er=True,
     )
 
     pipeline = create_pipeline(config)
@@ -558,90 +558,109 @@ class TestBrowserSmoke:
 
     @staticmethod
     def _find_frontend_url() -> str:
-        """Try common Vite ports and return the first reachable one."""
+        """Try common Vite ports and return the first one that serves PolyRAG content."""
         import requests
+        _POLYRAG_MARKERS = ("polyrag", "searchlab", "search lab", "PolyRAG", "SearchLab")
         for port in (5173, 3000, 3001, 3002, 4173):
             try:
                 r = requests.get(f"http://localhost:{port}", timeout=5)
                 if r.status_code < 500:
-                    return f"http://localhost:{port}"
+                    # Verify this is actually the PolyRAG frontend, not some other app
+                    body = r.text.lower()
+                    if any(m.lower() in body for m in _POLYRAG_MARKERS):
+                        return f"http://localhost:{port}"
             except Exception:
                 pass
-        pytest.skip("No frontend dev server found on ports 5173/3000/3001/3002/4173 — run: npm run dev")
+        pytest.skip("No PolyRAG frontend dev server found on ports 5173/3000/3001/3002/4173 — run: npm run dev")
 
     def test_browser_search_lab_loads(self):
         """Browser can open the SearchLab page."""
         _require_browser_server()
         frontend_url = self._find_frontend_url()
+        import concurrent.futures
         from playwright.sync_api import sync_playwright
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            try:
-                page.goto(f"{frontend_url}/search", timeout=10000)
-                page.wait_for_load_state("networkidle", timeout=10000)
-                search_input = page.query_selector("input[placeholder*='query']")
-                assert search_input is not None, "Search input not found on SearchLab page"
-            finally:
-                browser.close()
+        def _run():
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                try:
+                    page.goto(f"{frontend_url}/search", timeout=10000)
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                    search_input = page.query_selector("input[placeholder*='query']")
+                    assert search_input is not None, "Search input not found on SearchLab page"
+                finally:
+                    browser.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(_run).result(timeout=60)
 
     def test_browser_search_returns_results(self):
         """Browser can type query and see results for Hamlet search."""
         _require_browser_server()
         frontend_url = self._find_frontend_url()
+        import concurrent.futures
         from playwright.sync_api import sync_playwright
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            try:
-                page.goto(f"{frontend_url}/search", timeout=10000)
-                page.wait_for_load_state("networkidle", timeout=10000)
+        def _run():
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                try:
+                    page.goto(f"{frontend_url}/search", timeout=10000)
+                    page.wait_for_load_state("networkidle", timeout=10000)
 
-                milvus_checkbox = page.query_selector("input[value='milvus']")
-                if milvus_checkbox:
-                    milvus_checkbox.click()
+                    milvus_checkbox = page.query_selector("input[value='milvus']")
+                    if milvus_checkbox:
+                        milvus_checkbox.click()
 
-                coll_input = page.query_selector("input[placeholder*='collection']")
-                if coll_input:
-                    coll_input.fill(COLLECTION)
+                    coll_input = page.query_selector("input[placeholder*='collection']")
+                    if coll_input:
+                        coll_input.fill(COLLECTION)
 
-                search_input = page.query_selector("input[placeholder*='query']")
-                assert search_input is not None
-                search_input.fill(SEARCH_QUERY)
-                search_input.press("Enter")
+                    search_input = page.query_selector("input[placeholder*='query']")
+                    assert search_input is not None
+                    search_input.fill(SEARCH_QUERY)
+                    search_input.press("Enter")
 
-                page.wait_for_selector("[data-testid='result-card'], .result-card, .bg-gray-800",
-                                       timeout=30000)
-                content = page.content()
-                assert len(content) > 1000, "Page appears empty after search"
-            finally:
-                browser.close()
+                    page.wait_for_selector("[data-testid='result-card'], .result-card, .bg-gray-800",
+                                           timeout=30000)
+                    content = page.content()
+                    assert len(content) > 1000, "Page appears empty after search"
+                finally:
+                    browser.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(_run).result(timeout=120)
 
     def test_browser_prompt_editor_page_loads(self):
         """Browser can navigate to /prompts and see PromptEditor."""
         _require_browser_server()
         frontend_url = self._find_frontend_url()
+        import concurrent.futures
         from playwright.sync_api import sync_playwright
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            try:
-                page.goto(f"{frontend_url}/prompts", timeout=10000)
-                page.wait_for_load_state("networkidle", timeout=15000)
-                content = page.content()
-                # Nav link is active (route registered) OR page shows prompt content.
-                # An AxiosError means the route loaded but the running API server needs
-                # a restart to pick up the new /api/prompts endpoint — still a pass.
-                assert (
-                    'href="/prompts"' in content          # nav link exists
-                    or "Prompt" in content                # page heading
-                    or "Query Rewriting" in content       # prompt table content
-                ), "PromptEditor route not registered in frontend at all"
-            finally:
-                browser.close()
+        def _run():
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                try:
+                    page.goto(f"{frontend_url}/prompts", timeout=10000)
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                    content = page.content()
+                    # Nav link is active (route registered) OR page shows prompt content.
+                    # An AxiosError means the route loaded but the running API server needs
+                    # a restart to pick up the new /api/prompts endpoint — still a pass.
+                    assert (
+                        'href="/prompts"' in content          # nav link exists
+                        or "Prompt" in content                # page heading
+                        or "Query Rewriting" in content       # prompt table content
+                    ), "PromptEditor route not registered in frontend at all"
+                finally:
+                    browser.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(_run).result(timeout=60)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

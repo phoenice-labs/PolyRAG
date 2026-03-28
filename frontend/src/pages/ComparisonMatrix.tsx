@@ -17,6 +17,7 @@ import {
   type CompareRow, type ComparePerQueryRow, type CompareChunkPreview,
 } from '../api/compare'
 import { getCollections, type Collection } from '../api/backends'
+import RetrievalTrace from '../components/RetrievalTrace/RetrievalTrace'
 
 // ── Backend metadata ────────────────────────────────────────────────────────
 const ALL_BACKENDS = ['faiss', 'chromadb', 'qdrant', 'weaviate', 'milvus', 'pgvector']
@@ -249,9 +250,11 @@ function OverlapMatrix({ perQuery, backends }: { perQuery: ComparePerQueryRow[];
 }
 
 // Feature 1 — Chunk Preview Panel (with optional graph trail)
-function ChunkPreviewPanel({ chunks, backend, query, graphEntities, graphPaths, onClose }: {
+function ChunkPreviewPanel({ chunks, backend, query, graphEntities, graphPaths, methodContributions, onClose }: {
   chunks: CompareChunkPreview[]; backend: string; query: string
-  graphEntities?: string[]; graphPaths?: string[]; onClose: () => void
+  graphEntities?: string[]; graphPaths?: string[]
+  methodContributions?: Record<string, { chunks_contributed?: number; contribution_pct?: number }>
+  onClose: () => void
 }) {
   const [tab, setTab] = useState<'chunks' | 'graph'>('chunks')
   const hasGraph = (graphEntities?.length ?? 0) + (graphPaths?.length ?? 0) > 0
@@ -291,6 +294,13 @@ function ChunkPreviewPanel({ chunks, backend, query, graphEntities, graphPaths, 
                   <p className="text-xs text-gray-300 leading-relaxed">{c.text}{c.text.length >= 300 ? '…' : ''}</p>
                 </div>
               ))}
+              {(methodContributions || chunks.some(c => c.method_lineage?.length)) && (
+                <RetrievalTrace
+                  methodContributions={methodContributions}
+                  chunks={chunks.map(c => ({ chunk_id: c.chunk_id, text: c.text, score: c.score, method_lineage: c.method_lineage, metadata: c.metadata }))}
+                  label={`Method Traceability — ${backend}`}
+                />
+              )}
             </>
           ) : (
             <div className="space-y-4">
@@ -480,7 +490,7 @@ function CompareGuideModal({ onClose }: { onClose: () => void }) {
                 { n: '1', text: 'Choose Data Source — use an existing ingested collection (Existing Collection) or paste raw text (Paste Text) which will be ingested on-the-fly for each backend.' },
                 { n: '2', text: 'Select Backends — tick the backends you want to compare. At least 2 required. Backends not yet set up will return empty results without crashing the others.' },
                 { n: '3', text: 'Enter Queries — type one query per line, or click "Load Sample Queries" for pre-built Shakespeare questions. More queries = more reliable averages.' },
-                { n: '4', text: 'Configure Options — set Repeat Runs > 1 for P95 latency; enable Full Retrieval to include LLM-powered methods (requires LM Studio running locally).' },
+                { n: '4', text: 'Configure Options — set Repeat Runs > 1 for P95 latency; enable Full Retrieval to include LLM-powered methods (requires a configured LLM provider — set in Settings → LLM Configuration).' },
                 { n: '5', text: 'Click Run Comparison — results appear in a sortable table. Click any per-query row to see the actual chunks retrieved by each backend.' },
               ].map(({ n, text }) => (
                 <li key={n} className="flex gap-3">
@@ -578,6 +588,14 @@ export default function ComparisonMatrix() {
   const allCollectionNames = useMemo(() =>
     [...new Set(Object.values(backendCollections).flat().map(c => c.name))].sort(),
     [backendCollections])
+
+  // Auto-select: if current collectionName isn't in any backend, pick the first known one.
+  useEffect(() => {
+    if (allCollectionNames.length === 0) return
+    if (!allCollectionNames.includes(collectionName) && allCollectionNames[0]) {
+      setCollectionName(allCollectionNames[0])
+    }
+  }, [allCollectionNames]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Queries & options ──
   const [queriesText, setQueriesText]     = useState('')
@@ -681,6 +699,7 @@ export default function ComparisonMatrix() {
           query={previewRow.query}
           graphEntities={previewRow.graph_entities}
           graphPaths={previewRow.graph_paths}
+          methodContributions={previewRow.method_contributions}
           onClose={() => setPreviewRow(null)}
         />
       )}

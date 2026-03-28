@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 const STORAGE_KEY = 'polyrag-settings'
 
@@ -19,6 +20,26 @@ export const EMBEDDING_MODELS = [
 
 export type EmbeddingModelId = typeof EMBEDDING_MODELS[number]['value']
 
+export interface IngestConfig {
+  chunkSize: number
+  overlap: number
+  strategy: string
+  collection: string
+  extractEntities: boolean
+  enableSplade: boolean
+  clearFirst: boolean
+}
+
+const DEFAULT_INGEST_CONFIG: IngestConfig = {
+  chunkSize: 400,
+  overlap: 64,
+  strategy: 'sentence',
+  collection: 'polyrag_docs',
+  extractEntities: false,
+  enableSplade: false,
+  clearFirst: false,
+}
+
 interface AppState {
   selectedBackends: string[]
   setSelectedBackends: (b: string[]) => void
@@ -32,12 +53,19 @@ interface AppState {
   setRetrievalMethod: (key: string, val: boolean) => void
   backendStatuses: Record<string, 'unknown' | 'ok' | 'error'>
   setBackendStatus: (name: string, status: 'unknown' | 'ok' | 'error') => void
+  /** Active ingest job IDs keyed by backend — survives page navigation. */
+  activeIngestJobs: Record<string, string>
+  setActiveIngestJob: (backend: string, jobId: string) => void
+  clearActiveIngestJobs: () => void
+  /** Persisted ingestion studio form config — survives navigation + browser refresh. */
+  ingestConfig: IngestConfig
+  setIngestConfig: (patch: Partial<IngestConfig>) => void
 }
 
 const defaultMethods = {
   enable_dense: true,
   enable_bm25: true,
-  enable_splade: false,   // off by default — downloads ~440 MB model on first use; toggle on after model is cached
+  enable_splade: false,   // off by default — requires SPLADE index built at ingest time (enable in Ingestion Studio)
   enable_graph: true,
   enable_rerank: true,
   enable_mmr: true,
@@ -94,27 +122,65 @@ function applyDependencies(
   return { methods: next, autoEnabled: nextAuto }
 }
 
-export const useStore = create<AppState>((set) => ({
-  selectedBackends: ['faiss', 'chromadb'],
-  setSelectedBackends: (b) => set({ selectedBackends: b }),
-  activeCollection: 'polyrag_docs',
-  setActiveCollection: (c) => set({ activeCollection: c }),
-  embeddingModel: loadSetting<EmbeddingModelId>('embeddingModel', 'all-MiniLM-L6-v2'),
-  setEmbeddingModel: (m) => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...saved, embeddingModel: m }))
-    } catch { /* ignore */ }
-    set({ embeddingModel: m })
-  },
-  retrievalMethods: defaultMethods,
-  autoEnabledMethods: {},
-  setRetrievalMethod: (key, val) =>
-    set((s) => {
-      const result = applyDependencies(s.retrievalMethods, s.autoEnabledMethods, key, val)
-      return { retrievalMethods: result.methods, autoEnabledMethods: result.autoEnabled }
+export const useStore = create<AppState>()(
+  persist(
+    (set) => ({
+      selectedBackends: ['faiss', 'chromadb'],
+      setSelectedBackends: (b) => set({ selectedBackends: b }),
+      activeCollection: 'polyrag_docs',
+      setActiveCollection: (c) => set({ activeCollection: c }),
+      embeddingModel: loadSetting<EmbeddingModelId>('embeddingModel', 'all-MiniLM-L6-v2'),
+      setEmbeddingModel: (m) => {
+        try {
+          const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...saved, embeddingModel: m }))
+        } catch { /* ignore */ }
+        set({ embeddingModel: m })
+      },
+      retrievalMethods: defaultMethods,
+      autoEnabledMethods: {},
+      setRetrievalMethod: (key, val) =>
+        set((s) => {
+          const result = applyDependencies(s.retrievalMethods, s.autoEnabledMethods, key, val)
+          return { retrievalMethods: result.methods, autoEnabledMethods: result.autoEnabled }
+        }),
+      backendStatuses: {},
+      setBackendStatus: (name, status) =>
+        set((s) => ({ backendStatuses: { ...s.backendStatuses, [name]: status } })),
+      activeIngestJobs: {},
+      setActiveIngestJob: (backend, jobId) =>
+        set((s) => ({ activeIngestJobs: { ...s.activeIngestJobs, [backend]: jobId } })),
+      clearActiveIngestJobs: () => set({ activeIngestJobs: {} }),
+      ingestConfig: DEFAULT_INGEST_CONFIG,
+      setIngestConfig: (patch) =>
+        set((s) => ({ ingestConfig: { ...s.ingestConfig, ...patch } })),
     }),
-  backendStatuses: {},
-  setBackendStatus: (name, status) =>
-    set((s) => ({ backendStatuses: { ...s.backendStatuses, [name]: status } })),
-}))
+    {
+      name: 'polyrag-store-v1',
+      // Only persist the fields that should survive tab navigation.
+      // backendStatuses is transient — refreshed by health checks.
+      // retrievalMethods and autoEnabledMethods are intentionally NOT persisted
+      // so each session starts with a clean, well-known method set.
+      partialize: (s) => ({
+        ingestConfig: s.ingestConfig,
+        selectedBackends: s.selectedBackends,
+        activeCollection: s.activeCollection,
+        embeddingModel: s.embeddingModel,
+        activeIngestJobs: s.activeIngestJobs,
+      }),
+      storage: {
+        // sessionStorage: survives in-page navigation, cleared when tab closes.
+        // This prevents stale job IDs bleeding into new sessions.
+        getItem: (name) => {
+          try { return sessionStorage.getItem(name) } catch { return null }
+        },
+        setItem: (name, value) => {
+          try { sessionStorage.setItem(name, value) } catch { /* ignore */ }
+        },
+        removeItem: (name) => {
+          try { sessionStorage.removeItem(name) } catch { /* ignore */ }
+        },
+      },
+    }
+  )
+)

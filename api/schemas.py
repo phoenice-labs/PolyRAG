@@ -24,7 +24,7 @@ class RetrievalMethods(BaseModel):
     # ── Independent methods — freely combinable ───────────────────────────────
     enable_dense: bool = True
     enable_bm25: bool = True
-    enable_splade: bool = False     # SPLADE sparse neural (off by default — downloads ~440 MB model on first use)
+    enable_splade: bool = False     # SPLADE sparse neural (off by default — requires pre-built index at ingest time)
     enable_graph: bool = True
     enable_rerank: bool = True      # Cross-Encoder (post-retrieval)
     enable_mmr: bool = True         # MMR diversity (post-retrieval)
@@ -62,18 +62,20 @@ class IngestRequest(BaseModel):
     chunk_strategy: str = "section"  # section | sliding | sentence | paragraph
     chunk_size: int = 400
     overlap: int = 50
-    enable_er: bool = True  # entity-relation extraction
+    enable_er: bool = True      # entity-relation extraction (Knowledge Graph)
+    enable_splade: bool = False  # pre-build SPLADE sparse neural index during ingestion
     collection_name: str = "polyrag_docs"
     embedding_model: EmbeddingModel = "all-MiniLM-L6-v2"
 
 
 class SearchRequest(BaseModel):
-    query: str
-    backends: List[str] = Field(default_factory=lambda: ["faiss"])
+    query: str = Field(..., max_length=2000)
+    backends: List[str] = Field(default_factory=lambda: ["faiss"], max_length=6)
     collection_name: str = "polyrag_docs"
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=100)
     methods: RetrievalMethods = Field(default_factory=RetrievalMethods)
     embedding_model: EmbeddingModel = "all-MiniLM-L6-v2"
+    filters: Dict[str, Any] = Field(default_factory=dict)  # metadata pre-filter (passed to adapters that support it)
 
 
 class CompareRequest(BaseModel):
@@ -92,6 +94,7 @@ class CompareRequest(BaseModel):
     corpus_limit: Optional[int] = None
     repeat_runs: int = Field(default=1, ge=1, le=10)   # for P50/P95 latency
     compare_graph_ab: bool = False                      # run each query with graph ON vs OFF
+    timeout: int = Field(default=60, ge=10, le=300)    # per-backend timeout in seconds
 
 
 class FeedbackRequest(BaseModel):
@@ -134,6 +137,7 @@ class JobStatus(BaseModel):
     log_lines: List[str] = Field(default_factory=list)
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    collection_name: Optional[str] = None
 
 
 class ChunkItem(BaseModel):
@@ -189,6 +193,9 @@ class BackendSearchResult(BaseModel):
     graph_entities: List[str] = Field(default_factory=list)
     graph_paths: List[str] = Field(default_factory=list)
     latency_ms: float = 0.0
+    method_contributions: Dict[str, Any] = Field(default_factory=dict)
+    methods_used: Dict[str, bool] = Field(default_factory=dict)  # full flag map from request
+    query_variants: Dict[str, Any] = Field(default_factory=dict)  # rewritten/hyde/stepback text
     error: Optional[str] = None
 
 
@@ -245,6 +252,8 @@ class CompareChunkPreview(BaseModel):
     chunk_id: str
     text: str
     score: float
+    method_lineage: List[MethodContribution] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CompareBackendResult(BaseModel):
@@ -267,6 +276,7 @@ class CompareBackendResult(BaseModel):
     latency_no_graph_ms: float = 0.0
     latency_with_graph_ms: float = 0.0
     error: Optional[str] = None
+    method_contributions: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CompareSummary(BaseModel):
@@ -276,6 +286,7 @@ class CompareSummary(BaseModel):
     base_kw_hits: int = 0
     avg_score: float = 0.0
     ingest_time_s: float = 0.0
+    ingestion_performed: bool = False   # False when comparing existing collections (ingest_time_s is 0/irrelevant)
     avg_query_latency_ms: float = 0.0
     latency_p50_ms: float = 0.0
     latency_p95_ms: float = 0.0
@@ -291,3 +302,14 @@ class CompareSummary(BaseModel):
 class CompareResponse(BaseModel):
     per_query: List[CompareBackendResult]
     summary: List[CompareSummary]
+
+
+# ── Evaluate response models ───────────────────────────────────────────────────
+
+class RagasScores(BaseModel):
+    """LLM-judged quality scores from RAGAS (requires LM Studio at localhost:1234)."""
+    faithfulness: Optional[float] = None          # factual grounding in retrieved context
+    answer_relevancy: Optional[float] = None      # how well answer addresses the question
+    context_precision: Optional[float] = None     # fraction of context that is relevant
+    context_recall: Optional[float] = None        # fraction of ground truth covered by context
+    error: Optional[str] = None                   # set when RAGAS scoring failed

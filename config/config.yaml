@@ -61,18 +61,23 @@ retrieval:
   recall_multiplier: 5
 
   # ── SPLADE: Sparse Neural Retrieval ──────────────────────────────────────
-  # SPLADE (naver/splade-v3, Apache 2.0) learns term-importance weights via
-  # a BERT masked-language-model head.  Beats BM25 on MS MARCO (MRR@10: 40.2
-  # vs ~18) while remaining fully lexical and interpretable.
+  # SPLADE learns term-importance weights via a BERT masked-language-model head.
+  # Beats BM25 on MS MARCO while remaining fully lexical and interpretable.
   #
-  # First startup downloads ~440 MB model from HuggingFace (cached).
+  # Model: naver/splade-cocondenser-selfdistil (Apache 2.0, public, non-gated, ~110 MB)
+  # This is the recommended default — fully public on HuggingFace, no token needed.
+  # Alternative: naver/splade-cocondenser-ensembledistil (slightly higher quality,
+  # also public, ~110 MB).
+  # NOTE: naver/splade-v3 is gated (requires HF account approval) — avoid as default.
+  #
+  # First startup downloads ~110 MB model from HuggingFace (cached).
   # Subsequent restarts load pre-encoded vectors from persist_dir in <1 s.
   #
   # Weights: Dense=1.0, SPLADE=1.0, BM25=0.8 (BM25 down-weighted because
   # SPLADE subsumes most of its lexical signal while adding term expansion).
   splade:
     enabled: false              # toggle here or via frontend — false = zero overhead
-    model: naver/splade-v3      # Apache 2.0; best sparse model (MRR@10 40.2)
+    model: naver/splade-cocondenser-selfdistil  # Apache 2.0; public, non-gated, ~110 MB
     persist_dir: ./data/splade  # pre-encoded sparse vectors; rebuilt once per ingest
     splade_weight: 1.0          # RRF weight for SPLADE signal
     bm25_weight_with_splade: 0.8  # BM25 RRF weight when SPLADE is active

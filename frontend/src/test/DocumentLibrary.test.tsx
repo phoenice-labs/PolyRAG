@@ -31,8 +31,9 @@ describe('DocumentLibrary', () => {
   it('shows collections after load', async () => {
     render(<DocumentLibrary />)
     await waitFor(() => {
-      expect(screen.getByText('polyrag_docs')).toBeInTheDocument()
-      expect(screen.getByText('hamlet')).toBeInTheDocument()
+      // Collection names appear in multiple places (tabs + table rows) — use getAllByText
+      expect(screen.getAllByText('polyrag_docs').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('hamlet').length).toBeGreaterThan(0)
     })
   })
 
@@ -59,10 +60,12 @@ describe('DocumentLibrary', () => {
 
   it('shows empty state when no collections', async () => {
     const { getCollections } = await import('../api/backends')
-    vi.mocked(getCollections).mockResolvedValueOnce([])
-    render(<DocumentLibrary />)
+    // Override for ALL calls (6 parallel mount calls + loadCollections) to ensure empty state
+    vi.mocked(getCollections).mockResolvedValue([])
+    const { container } = render(<DocumentLibrary />)
     await waitFor(() => {
-      expect(screen.getByText(/No collections found/)).toBeInTheDocument()
+      // Text is split across elements: "No collections found in <span>backend</span>"
+      expect(container.textContent).toContain('No collections found')
     })
   })
 })

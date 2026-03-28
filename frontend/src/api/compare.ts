@@ -1,4 +1,7 @@
 import { api } from './client'
+import type { MethodContribution, MethodContributionStat } from './search'
+
+export type { MethodContribution, MethodContributionStat }
 
 export interface CompareRequest {
   /** Use an existing ingested collection (no re-ingestion). */
@@ -16,6 +19,8 @@ export interface CompareChunkPreview {
   chunk_id: string
   text: string
   score: number
+  method_lineage?: MethodContribution[]
+  metadata?: Record<string, unknown>
 }
 
 export interface CompareRow {
@@ -56,6 +61,7 @@ export interface ComparePerQueryRow {
   score_delta?: number
   latency_no_graph_ms?: number
   latency_with_graph_ms?: number
+  method_contributions?: Record<string, MethodContributionStat>
   error?: string
 }
 

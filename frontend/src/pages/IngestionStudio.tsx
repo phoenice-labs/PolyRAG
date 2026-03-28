@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import BackendSelector from '../components/BackendSelector/BackendSelector'
 import IngestionFlow from '../components/IngestionFlow/IngestionFlow'
 import LogStream from '../components/LogStream/LogStream'
 import { useStore } from '../store'
-import { ingestText, previewChunks, type ChunkPreview } from '../api/ingest'
+import { ingestText, previewChunks, getJobStatus, type ChunkPreview } from '../api/ingest'
 import { streamIngestLogs } from '../api/client'
 import { deleteCollection } from '../api/backends'
 
@@ -158,21 +158,36 @@ function ChunkingGuideModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function IngestionStudio() {
-  const { selectedBackends, activeCollection, setActiveCollection } = useStore()
+  const {
+    selectedBackends, activeCollection, setActiveCollection,
+    ingestConfig, setIngestConfig,
+    setActiveIngestJob, activeIngestJobs, clearActiveIngestJobs,
+  } = useStore()
   const navigate = useNavigate()
 
   // Source mode
   const [sourceMode, setSourceMode] = useState<SourceMode>('server')
-  const [text, setText] = useState('')
+  const [text, setText] = useState(() => {
+    try { return sessionStorage.getItem('polyrag-ingest-text') ?? '' } catch { return '' }
+  })
   const [serverPath, setServerPath] = useState('data/shakespeare.txt')
   const [dragging, setDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Chunking config
-  const [strategy, setStrategy] = useState('sentence')
-  const [chunkSize, setChunkSize] = useState(512)
-  const [overlap, setOverlap] = useState(64)
-  const [extractEntities, setExtractEntities] = useState(false)
+  // Chunking config — sourced from Zustand (persisted across navigation)
+  const strategy = ingestConfig.strategy
+  const chunkSize = ingestConfig.chunkSize
+  const overlap = ingestConfig.overlap
+  const extractEntities = ingestConfig.extractEntities
+  const enableSplade = ingestConfig.enableSplade
+  const clearFirst = ingestConfig.clearFirst
+  const setStrategy = (v: string) => setIngestConfig({ strategy: v })
+  const setChunkSize = (v: number) => setIngestConfig({ chunkSize: v })
+  const setOverlap = (v: number) => setIngestConfig({ overlap: v })
+  const setExtractEntities = (v: boolean) => setIngestConfig({ extractEntities: v })
+  const setEnableSplade = (v: boolean) => setIngestConfig({ enableSplade: v })
+  const setClearFirst = (v: boolean) => setIngestConfig({ clearFirst: v })
+
   const [showChunkingGuide, setShowChunkingGuide] = useState(false)
 
   // State
@@ -185,7 +200,103 @@ export default function IngestionStudio() {
   const [ingestCollection, setIngestCollection] = useState('')  // collection used in last ingest
   const [preview, setPreview] = useState<ChunkPreview | null>(null)
   const [showPreview, setShowPreview] = useState(false)
-  const [clearFirst, setClearFirst] = useState(false)
+  const [lockConflict, setLockConflict] = useState<{ jobId: string; backend: string } | null>(null)
+
+  // Persist text area content across navigation
+  const handleSetText = (t: string) => {
+    setText(t)
+    try { sessionStorage.setItem('polyrag-ingest-text', t) } catch { /* ignore */ }
+  }
+
+  // Warn browser tab close/refresh while ingest is running.
+  // In-app navigation is intentionally NOT blocked — jobs complete on the backend
+  // regardless, and the nav badge keeps users informed.
+  useEffect(() => {
+    if (!loading) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [loading])
+
+  // On mount: if Zustand has active job IDs (i.e. user navigated away during an ingest),
+  // reconnect the SSE stream and replay existing log lines from the backend.
+  useEffect(() => {
+    const entries = Object.entries(activeIngestJobs)
+    if (entries.length === 0) return
+
+    let mounted = true
+    const cleanups: Array<() => void> = []
+
+    ;(async () => {
+      const stillRunning: Array<[string, string]> = []
+      const restoredLines: string[] = []
+
+      for (const [backend, jobId] of entries) {
+        try {
+          const job = await getJobStatus(jobId)
+          if (!mounted) return
+          // Replay already-received log lines
+          for (const line of job.log_lines ?? []) {
+            restoredLines.push(`[${backend}] ${line}`)
+          }
+          if (job.status === 'running' || job.status === 'pending') {
+            stillRunning.push([backend, jobId])
+          } else {
+            // Job finished while away — clean up Zustand
+            clearActiveIngestJobs()
+            const remaining = { ...activeIngestJobs }
+            delete remaining[backend]
+            Object.entries(remaining).forEach(([b, id]) => setActiveIngestJob(b, id))
+          }
+        } catch {
+          // Job not found or network error — treat as gone
+        }
+      }
+
+      if (!mounted) return
+
+      if (restoredLines.length > 0) {
+        setLogs(['── Restored log from active job ──', ...restoredLines])
+      }
+
+      if (stillRunning.length === 0) return
+
+      setLoading(true)
+      let doneCount = 0
+
+      for (const [backend, jobId] of stillRunning) {
+        const cancel = streamIngestLogs(
+          jobId,
+          (line) => {
+            if (!mounted) return
+            const prefixed = `[${backend}] ${line}`
+            setLogs((prev) => [...prev, prefixed])
+            const step = detectStep(prefixed)
+            if (step) advanceStep(step)
+          },
+          () => {
+            if (!mounted) return
+            doneCount++
+            setJobResults((prev) => ({ ...prev, [backend]: 'done' }))
+            if (doneCount === stillRunning.length) {
+              markAllComplete()
+              setLoading(false)
+              clearActiveIngestJobs()
+            }
+          },
+        )
+        cleanups.push(cancel)
+      }
+    })()
+
+    return () => {
+      mounted = false
+      cleanups.forEach((c) => c())
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Step order for auto-advancing completed steps
   const STEP_ORDER = ['upload', 'chunk', 'embed', 'graph', 'upsert']
@@ -236,7 +347,7 @@ export default function IngestionStudio() {
   const readFile = (file: File) => {
     const reader = new FileReader()
     reader.onload = (ev) => {
-      setText(ev.target?.result as string ?? '')
+      handleSetText(ev.target?.result as string ?? '')
       setSourceMode('file')
     }
     reader.readAsText(file)
@@ -259,6 +370,7 @@ export default function IngestionStudio() {
     setLogs([])
     setJobResults({})
     setErUsed(false)
+    setLockConflict(null)
     setCompletedSteps(new Set())
     advanceStep('upload')
 
@@ -284,11 +396,15 @@ export default function IngestionStudio() {
         chunk_size: chunkSize,
         overlap,
         enable_er: extractEntities,
+        enable_splade: enableSplade,
       })
 
       const jobIds = response.job_ids  // { backend: job_id }
       const backends = Object.keys(jobIds)
       let doneCount = 0
+
+      // Persist job IDs to Zustand so they survive navigation
+      backends.forEach((backend) => setActiveIngestJob(backend, jobIds[backend]))
 
       // Stream logs from all backend jobs simultaneously
       backends.forEach((backend) => {
@@ -316,8 +432,16 @@ export default function IngestionStudio() {
         )
       })
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setLogs((prev) => [...prev, `ERROR: ${msg}`])
+      // Handle 409 Conflict (collection locked by another ingest job)
+      const anyErr = err as { response?: { status?: number; data?: { blocking_job_id?: string; blocking_backend?: string } } }
+      if (anyErr?.response?.status === 409) {
+        const detail = anyErr.response.data ?? {}
+        setLockConflict({ jobId: detail.blocking_job_id ?? '?', backend: detail.blocking_backend ?? '?' })
+        setLogs((prev) => [...prev, `ERROR: Collection "${activeCollection}" is locked by a running job (${detail.blocking_job_id ?? '?'}). Wait for it to complete or check the Jobs page.`])
+      } else {
+        const msg = err instanceof Error ? err.message : String(err)
+        setLogs((prev) => [...prev, `ERROR: ${msg}`])
+      }
       setLoading(false)
     }
   }
@@ -368,7 +492,7 @@ export default function IngestionStudio() {
           {sourceMode === 'text' && (
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => handleSetText(e.target.value)}
               placeholder="Paste your document text here..."
               className="w-full h-36 bg-gray-800 text-sm text-gray-200 rounded border border-gray-700 p-2 resize-none focus:outline-none focus:border-brand-500"
             />
@@ -485,6 +609,19 @@ export default function IngestionStudio() {
               className="rounded border-gray-600 bg-gray-800" />
             Extract Entities (ER)
           </label>
+          <label className="flex items-start gap-2 text-xs text-gray-400 cursor-pointer">
+            <input type="checkbox" checked={enableSplade}
+              onChange={(e) => setEnableSplade(e.target.checked)}
+              className="rounded border-gray-600 bg-gray-800 mt-0.5 shrink-0" />
+            <span>
+              Enable SPLADE Index
+              <span className="block text-gray-600 font-normal mt-0.5">
+                Pre-encodes sparse neural vectors during ingestion (~110 MB model, downloads once).
+                Uses <span className="font-mono text-gray-500">naver/splade-cocondenser-selfdistil</span> (Apache 2.0, public).
+                Enables SPLADE to contribute to RRF fusion at search time.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Backend selector */}
@@ -518,6 +655,23 @@ export default function IngestionStudio() {
               {loading ? 'Running...' : clearFirst ? '⚠ Clear & Ingest' : 'Start Ingestion'}
             </button>
           </div>
+
+          {/* Lock conflict warning */}
+          {lockConflict && (
+            <div className="flex items-start gap-2 bg-amber-900/30 border border-amber-700 rounded p-3 text-sm text-amber-300">
+              <span className="shrink-0 text-base">🔒</span>
+              <div>
+                <p className="font-semibold">Collection locked</p>
+                <p className="text-xs text-amber-400 mt-0.5">
+                  A job on <span className="font-mono">{lockConflict.backend}</span> is already ingesting this collection
+                  (job <span className="font-mono">{lockConflict.jobId.slice(0, 8)}…</span>).
+                  Wait for it to finish or check the{' '}
+                  <button onClick={() => navigate('/jobs')} className="underline hover:text-white">Jobs page</button>.
+                </p>
+              </div>
+              <button onClick={() => setLockConflict(null)} className="ml-auto text-amber-500 hover:text-white text-lg leading-none shrink-0">✕</button>
+            </div>
+          )}
         </div>
 
         {/* Per-backend job status */}
@@ -599,6 +753,17 @@ export default function IngestionStudio() {
 
       {/* Chunking Guide Modal */}
       {showChunkingGuide && <ChunkingGuideModal onClose={() => setShowChunkingGuide(false)} />}
+
+      {/* Sticky "ingest running" info banner — reminds user the job continues if they navigate away */}
+      {loading && (
+        <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 bg-gray-800 border border-amber-700 rounded-lg px-4 py-2.5 shadow-xl text-sm text-amber-300">
+          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+          Ingest running — safe to navigate away. Track in{' '}
+          <button onClick={() => navigate('/jobs')} className="underline hover:text-white font-medium">
+            Jobs
+          </button>
+        </div>
+      )}
     </div>
   )
 }

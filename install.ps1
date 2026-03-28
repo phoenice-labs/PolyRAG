@@ -95,6 +95,24 @@ Write-Host ""
 Write-Host "==> Downloading spaCy English model (en_core_web_sm, ~13 MB) ..." -ForegroundColor Cyan
 python -m spacy download en_core_web_sm --quiet
 
+# ── SPLADE model pre-download (Phase 3b Sparse Neural Retrieval) ──────────────
+# Pre-download the SPLADE model so first ingestion with SPLADE enabled does not
+# stall waiting for a 110 MB download from HuggingFace.
+# Model: naver/splade-cocondenser-selfdistil (Apache 2.0, public, non-gated)
+Write-Host ""
+Write-Host "==> Pre-downloading SPLADE model (naver/splade-cocondenser-selfdistil, ~110 MB) ..." -ForegroundColor Cyan
+python -c @"
+try:
+    from sentence_transformers import SparseEncoder
+    enc = SparseEncoder('naver/splade-cocondenser-selfdistil')
+    print('  SPLADE model   : pre-downloaded and cached ✅')
+except ImportError:
+    print('  SPLADE model   : skipped (sentence-transformers not installed or no SparseEncoder support)')
+except Exception as e:
+    print(f'  SPLADE model   : WARNING — could not pre-download: {e}')
+    print('  This is non-fatal. SPLADE will download on first use.')
+"@
+
 # ── Frontend (Phase 13) ───────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "==> Installing frontend dependencies (Node.js / npm) ..." -ForegroundColor Cyan

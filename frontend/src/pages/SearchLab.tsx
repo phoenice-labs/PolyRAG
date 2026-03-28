@@ -6,8 +6,73 @@ import RetrievalTrace from '../components/RetrievalTrace/RetrievalTrace'
 import { useStore } from '../store'
 import { search, type SearchResponse, type LLMTraceEntry } from '../api/search'
 import { fetchRetrievalTrails, clearRetrievalTrails, type RetrievalTrailRecord } from '../api/trails'
+import { getCollections, type Collection } from '../api/backends'
 
-// ── LLM Trace Panel ───────────────────────────────────────────────────────────
+// ── Collection Picker ─────────────────────────────────────────────────────────
+
+function CollectionPicker() {
+  const { selectedBackends, activeCollection, setActiveCollection } = useStore()
+  const [collections, setCollections] = useState<Collection[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedBackends.length) return
+    setLoading(true)
+    // Fetch collections from all selected backends, deduplicate by name
+    Promise.allSettled(selectedBackends.map(b => getCollections(b)))
+      .then(results => {
+        const seen = new Set<string>()
+        const merged: Collection[] = []
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            for (const col of r.value) {
+              if (!seen.has(col.name)) {
+                seen.add(col.name)
+                merged.push(col)
+              }
+            }
+          }
+        }
+        merged.sort((a, b) => a.name.localeCompare(b.name))
+        setCollections(merged)
+        // Auto-select first if current activeCollection not present
+        if (merged.length > 0 && !seen.has(activeCollection)) {
+          setActiveCollection(merged[0].name)
+        }
+      })
+      .finally(() => setLoading(false))
+  }, [selectedBackends.join(',')])  // re-fetch when backends change
+
+  return (
+    <div className="bg-gray-900 rounded-lg p-4">
+      <div className="text-xs text-gray-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+        <span>Collection</span>
+        {loading && <span className="text-gray-600 animate-pulse">loading…</span>}
+      </div>
+      {collections.length === 0 && !loading ? (
+        <p className="text-xs text-gray-600 italic">No collections found. Ingest data first.</p>
+      ) : (
+        <select
+          value={activeCollection}
+          onChange={e => setActiveCollection(e.target.value)}
+          className="w-full bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-brand-500"
+        >
+          {collections.map(col => (
+            <option key={col.name} value={col.name}>
+              {col.name}
+              {col.chunk_count != null ? ` (${col.chunk_count.toLocaleString()} chunks)` : ''}
+            </option>
+          ))}
+        </select>
+      )}
+      {activeCollection && (
+        <p className="text-[10px] text-gray-600 mt-1 truncate" title={activeCollection}>
+          Active: {activeCollection}
+        </p>
+      )}
+    </div>
+  )
+}
 
 function LLMTracePanel({ traces }: { traces: LLMTraceEntry[] }) {
   const [openIdx, setOpenIdx] = useState<number | null>(null)
@@ -37,7 +102,7 @@ function LLMTracePanel({ traces }: { traces: LLMTraceEntry[] }) {
               <span className="text-gray-600 text-xs shrink-0">{openIdx === i ? '▲' : '▼'}</span>
             </button>
             {openIdx === i && (
-              <div className="mt-2 space-y-2 text-xs font-mono">
+              <div className="mt-2 space-y-2 text-xs font-mono pr-1">
                 <div className="bg-gray-800 rounded p-2">
                   <div className="text-amber-400 font-semibold mb-1 font-sans">System Prompt</div>
                   <pre className="text-gray-300 whitespace-pre-wrap break-words">{t.system_prompt}</pre>
@@ -61,16 +126,22 @@ function LLMTracePanel({ traces }: { traces: LLMTraceEntry[] }) {
 
 // ── Retrieval Trails Panel ────────────────────────────────────────────────────
 
-function TrailsPanel({ searchCount }: { searchCount: number }) {
+function TrailsPanel({ searchCount, activeBackends }: { searchCount: number; activeBackends: string[] }) {
   const [trails, setTrails] = useState<RetrievalTrailRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
+  // Default filter to the first active backend so user only sees relevant trails immediately
+  const [backendFilter, setBackendFilter] = useState<string>('__active__')
+
+  const resolvedFilter = backendFilter === '__active__'
+    ? (activeBackends.length === 1 ? activeBackends[0] : undefined)
+    : (backendFilter === '__all__' ? undefined : backendFilter)
 
   const load = async () => {
     setLoading(true)
     try {
-      setTrails(await fetchRetrievalTrails(50))
+      setTrails(await fetchRetrievalTrails(50, resolvedFilter))
     } catch {
       // silently ignore if API not available
     } finally {
@@ -83,10 +154,22 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
     setTrails([])
   }
 
-  // Reload whenever the panel is open AND a new search finishes (searchCount changes).
+  // Reload whenever the panel is open AND a new search finishes (searchCount or filter changes).
   useEffect(() => {
     if (open) load()
-  }, [open, searchCount])
+  }, [open, searchCount, backendFilter, activeBackends.join(',')])
+
+  // Known backends for the filter dropdown
+  const ALL_BACKENDS = ['faiss', 'chromadb', 'qdrant', 'weaviate', 'milvus', 'pgvector']
+
+  // Display label for current filter
+  const filterLabel = backendFilter === '__all__'
+    ? 'All backends'
+    : backendFilter === '__active__'
+      ? activeBackends.length === 1
+        ? activeBackends[0]
+        : `Active (${activeBackends.join(', ')})`
+      : backendFilter
 
   return (
     <div className="border border-gray-700 rounded-lg bg-gray-900">
@@ -99,8 +182,24 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
       </button>
       {open && (
         <div className="border-t border-gray-700">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800">
-            <span className="text-xs text-gray-500">{trails.length} stored trail{trails.length !== 1 ? 's' : ''}</span>
+          <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">{trails.length} trail{trails.length !== 1 ? 's' : ''}</span>
+              {/* Backend filter */}
+              <span className="text-xs text-gray-600">|</span>
+              <span className="text-xs text-gray-500">Backend:</span>
+              <select
+                value={backendFilter}
+                onChange={(e) => setBackendFilter(e.target.value)}
+                className="text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded px-1.5 py-0.5 focus:outline-none focus:border-sky-500"
+              >
+                <option value="__active__">Active ({activeBackends.length === 1 ? activeBackends[0] : activeBackends.join(', ') || '—'})</option>
+                <option value="__all__">All backends</option>
+                {ALL_BACKENDS.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </div>
             <div className="flex gap-2">
               <button onClick={load} className="text-xs text-sky-400 hover:text-sky-300">↻ Refresh</button>
               <button onClick={handleClear} className="text-xs text-red-400 hover:text-red-300">✕ Clear</button>
@@ -108,7 +207,9 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
           </div>
           {loading && <div className="p-4 text-xs text-gray-500">Loading...</div>}
           {!loading && trails.length === 0 && (
-            <div className="p-4 text-xs text-gray-600 text-center">No trails yet. Run a search to record a trail.</div>
+            <div className="p-4 text-xs text-gray-600 text-center">
+              No trails for <span className="text-gray-400 font-medium">{filterLabel}</span>. Run a search to record a trail.
+            </div>
           )}
           <div className="divide-y divide-gray-800 max-h-96 overflow-y-auto">
             {trails.map((trail, i) => (
@@ -127,7 +228,7 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
                   <span className="text-gray-600 text-xs shrink-0">{expandedIdx === i ? '▲' : '▼'}</span>
                 </button>
                 {expandedIdx === i && (
-                  <div className="mt-2 space-y-2">
+                  <div className="mt-2 space-y-2 pr-1">
                     {/* Methods used */}
                     <div className="flex flex-wrap gap-1">
                       {Object.entries(trail.methods_used)
@@ -138,6 +239,30 @@ function TrailsPanel({ searchCount }: { searchCount: number }) {
                           </span>
                         ))}
                     </div>
+                    {/* Method Contribution Bars */}
+                    {trail.method_contributions && Object.keys(trail.method_contributions).length > 0 && (
+                      <div className="mt-2">
+                        <div className="text-xs font-semibold text-gray-500 mb-1">Method Contributions</div>
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(trail.method_contributions)
+                            .filter(([, s]) => (s.contribution_pct ?? 0) > 0)
+                            .sort(([, a], [, b]) => (b.contribution_pct ?? 0) - (a.contribution_pct ?? 0))
+                            .map(([method, stats]) => (
+                              <div key={method} className="flex items-center gap-1 text-xs bg-blue-50 rounded px-2 py-0.5">
+                                <span className="font-medium text-blue-700">{method.replace('enable_', '')}</span>
+                                <div className="w-16 bg-blue-100 rounded-full h-1.5">
+                                  <div
+                                    className="bg-blue-500 h-1.5 rounded-full"
+                                    style={{ width: `${Math.min(stats.contribution_pct ?? 0, 100)}%` }}
+                                  />
+                                </div>
+                                <span className="text-blue-600">{stats.contribution_pct?.toFixed(1)}%</span>
+                              </div>
+                            ))
+                          }
+                        </div>
+                      </div>
+                    )}
                     {/* Query expansion variants */}
                     {trail.query_variants && Object.keys(trail.query_variants).length > 0 && (
                       <div className="space-y-1 border-l-2 border-gray-700 pl-2">
@@ -236,9 +361,9 @@ function SearchGuideModal({ onClose }: { onClose: () => void }) {
                   { name: 'Knowledge Graph', desc: 'Entity-relation graph search via spaCy NER + Kuzu. Surfaces chunks connected through named entities (people, places, events).' },
                   { name: 'Cross-Encoder Rerank', desc: 'Re-scores top candidates using a cross-encoder model for higher precision. Adds ~200–500 ms but significantly improves ranking.' },
                   { name: 'MMR Diversity', desc: 'Maximal Marginal Relevance — reduces redundancy by penalising duplicate-content chunks. Use when results feel repetitive.' },
-                  { name: 'SPLADE', desc: 'Sparse neural retrieval (naver/splade-v3). Learned term expansion — better than BM25 for domain-specific queries. Requires SPLADE index built at ingest time.' },
+                  { name: 'SPLADE', desc: 'Sparse neural retrieval (naver/splade-cocondenser-selfdistil, ~110 MB, Apache 2.0). Learned term expansion — better than BM25 for domain-specific queries. Requires SPLADE index built at ingest time (toggle "Enable SPLADE Index" in Ingestion Studio).' },
                 ]},
-                { group: 'LLM-Required (needs LM Studio)', color: 'text-amber-400', methods: [
+                { group: 'LLM-Required (needs configured LLM)', color: 'text-amber-400', methods: [
                   { name: 'Query Rewrite', desc: 'LLM rephrases your query before retrieval — fixes typos, expands abbreviations, clarifies ambiguous questions.' },
                   { name: 'Multi-Query', desc: 'LLM generates 3 alternative phrasings of your query and merges results — improves recall for complex questions.' },
                   { name: 'HyDE', desc: 'Hypothetical Document Embeddings — LLM drafts a synthetic answer, then retrieves chunks similar to that answer rather than the question.' },
@@ -423,6 +548,7 @@ function ABModeGuideModal({ onClose }: { onClose: () => void }) {
 
 export default function SearchLab() {
   const { selectedBackends, activeCollection, retrievalMethods } = useStore()
+
   const [query, setQuery] = useState('')
   const [topK, setTopK] = useState<number>(() => {
     try { return parseInt(localStorage.getItem('polyrag_top_k') ?? '10', 10) } catch { return 10 }
@@ -438,6 +564,40 @@ export default function SearchLab() {
   const [showSearchGuide, setShowSearchGuide] = useState(false)
   // Incremented after each successful search so TrailsPanel auto-reloads.
   const [trailSearchCount, setTrailSearchCount] = useState(0)
+  // Shown when results are restored from sessionStorage on mount.
+  const [restoredBanner, setRestoredBanner] = useState<string | null>(null)
+
+  // ── Restore previous results on mount (if < 10 minutes old) ─────────────
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('polyrag-search-snapshot')
+      if (!raw) return
+      const snap = JSON.parse(raw) as {
+        query: string
+        results: SearchResponse[]
+        topK: number
+        abMode: boolean
+        ts: number
+      }
+      const ageMs = Date.now() - (snap.ts ?? 0)
+      if (ageMs > 10 * 60 * 1000) {
+        sessionStorage.removeItem('polyrag-search-snapshot')
+        return
+      }
+      // Restore
+      setQuery(snap.query ?? '')
+      setResults(snap.results ?? [])
+      setTopK(snap.topK ?? topK)
+      setAbMode(snap.abMode ?? false)
+      setTrailSearchCount(1)  // triggers TrailsPanel to load trails
+      const ageMin = Math.round(ageMs / 60000)
+      setRestoredBanner(
+        `⚡ Restored from previous search${ageMin > 0 ? ` (${ageMin}m ago)` : ''} — ${(snap.results ?? []).reduce((n, r) => n + r.chunks.length, 0)} results`
+      )
+    } catch {
+      sessionStorage.removeItem('polyrag-search-snapshot')
+    }
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('polyrag_search_history', JSON.stringify(history))
@@ -451,6 +611,7 @@ export default function SearchLab() {
     if (!query.trim()) return
     setLoading(true)
     setError(null)
+    setRestoredBanner(null)
     try {
       const data = await search({
         query,
@@ -462,14 +623,22 @@ export default function SearchLab() {
       setResults(data)
       setHistory((prev) => [query, ...prev.filter((q) => q !== query)].slice(0, 20))
       setTrailSearchCount((c) => c + 1)
+      // Persist snapshot so results survive navigation
+      try {
+        sessionStorage.setItem('polyrag-search-snapshot', JSON.stringify({
+          query,
+          results: data,
+          topK,
+          abMode,
+          ts: Date.now(),
+        }))
+      } catch { /* sessionStorage full — non-fatal */ }
     } catch (err) {
       setError(String(err))
     } finally {
       setLoading(false)
     }
   }
-
-  const allTraceSteps = results.flatMap((r) => r.trace ?? [])
 
   return (
     <div className="flex gap-4 h-full">
@@ -478,6 +647,7 @@ export default function SearchLab() {
         <div className="bg-gray-900 rounded-lg p-4">
           <BackendSelector />
         </div>
+        <CollectionPicker />
         <div className="bg-gray-900 rounded-lg p-4">
           <MethodToggle />
         </div>
@@ -559,8 +729,28 @@ export default function SearchLab() {
           <div className="bg-red-900/30 border border-red-700 rounded p-3 text-sm text-red-300">{error}</div>
         )}
 
+        {restoredBanner && (
+          <div className="flex items-center justify-between bg-sky-900/30 border border-sky-700 rounded px-3 py-2 text-sm text-sky-300">
+            <span>{restoredBanner}</span>
+            <button
+              onClick={() => {
+                setRestoredBanner(null)
+                setResults([])
+                setQuery('')
+                sessionStorage.removeItem('polyrag-search-snapshot')
+              }}
+              className="ml-4 text-sky-400 hover:text-white text-xs underline shrink-0"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+
+        {/* Single scrollable column: results + all trace panels */}
+        <div className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-4">
+
         {/* Results */}
-        <div className="flex-1 overflow-y-auto">
+        <div>
           {results.length === 0 && !loading && (
             <div className="text-gray-600 text-center mt-16">Run a search to see results</div>
           )}
@@ -609,12 +799,24 @@ export default function SearchLab() {
               ))}
             </div>
           )}
-        </div>
+        </div>{/* /Results inner */}
 
-        {allTraceSteps.length > 0 && <RetrievalTrace steps={allTraceSteps} />}
+        {results.map((res) => (
+          <RetrievalTrace
+            key={`trace-${res.backend}`}
+            steps={res.trace ?? []}
+            methodContributions={res.method_contributions}
+            chunks={res.results?.map(r => ({ chunk_id: r.chunk_id, text: r.text, score: r.score, method_lineage: r.method_lineage, metadata: r.metadata }))}
+            answer={res.answer}
+            graphEntities={res.graph_entities}
+            graphPaths={res.graph_paths}
+            queryVariants={res.query_variants}
+            label={`Method Traceability — ${res.backend}`}
+          />
+        ))}
 
         {/* Persistent Retrieval Trails (always visible, auto-reloads after each search) */}
-        <TrailsPanel searchCount={trailSearchCount} />
+        <TrailsPanel searchCount={trailSearchCount} activeBackends={selectedBackends} />
 
         {/* LLM Trace Panels — one per backend result that has LLM calls */}
         {results.map((res) =>
@@ -625,6 +827,8 @@ export default function SearchLab() {
             </div>
           ) : null
         )}
+
+        </div>{/* /scrollable wrapper */}
       </div>
       {showAbGuide && <ABModeGuideModal onClose={() => setShowAbGuide(false)} />}
       {showSearchGuide && <SearchGuideModal onClose={() => setShowSearchGuide(false)} />}

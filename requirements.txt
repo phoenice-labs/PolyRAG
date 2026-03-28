@@ -23,7 +23,7 @@ chromadb>=0.5.0
 faiss-cpu>=1.7.4
 qdrant-client>=1.9.0
 weaviate-client>=4.5.0    # Server adapter (docker-compose.polyrag.yml)
-pymilvus>=2.4.0           # Milvus standalone (docker-compose.polyrag.yml)
+pymilvus[milvus_lite]>=2.4.0  # Milvus standalone + local lite mode (docker-compose.polyrag.yml)
 psycopg2-binary>=2.9.9    # PGVector adapter (docker-compose.polyrag.yml)
 pgvector>=0.3.5           # PGVector Python type support
 
@@ -64,3 +64,20 @@ uvicorn[standard]>=0.29.0
 sse-starlette>=2.1.0
 python-multipart>=0.0.9
 aiofiles>=23.2.1
+
+# ── Scalability: Rate limiting + Multi-worker production server ───────────────
+slowapi>=0.1.9          # Per-IP rate limiting middleware for FastAPI
+gunicorn>=22.0.0        # Multi-worker WSGI/ASGI server (used with UvicornWorker)
+                        # Usage: .\start.ps1 -Workers 4
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+# RAGAS: LLM-judged RAG quality metrics (faithfulness, answer_relevancy,
+# context_precision, context_recall). Requires LM Studio at localhost:1234.
+# Gracefully disabled when LM Studio is offline.
+ragas>=0.4.0
+langchain-openai>=0.1.0   # LangChain wrapper — bridges LM Studio ↔ RAGAS judge LLM
+
+# -- Load testing ---------------------------------------------------------------
+# Locust: concurrent load simulation for validating scalability fixes.
+# Run: .\scripts\load-test.ps1  (or: locust -f tests/load/locustfile.py)
+locust>=2.24

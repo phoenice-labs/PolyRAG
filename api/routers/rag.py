@@ -48,6 +48,40 @@ class ConfidenceThresholds(BaseModel):
     low: float = Field(0.3, ge=0.0, le=1.0, description="Score ≥ this → LOW verdict")
 
 
+# ── Schema: Scale Hints ───────────────────────────────────────────────────────
+
+
+class ScaleHints(BaseModel):
+    """
+    Per-profile operational tuning for ingestion and retrieval volume.
+
+    These settings are passed through to the ingestion pipeline and streaming chunker.
+    They do NOT affect retrieval quality — only throughput, memory usage, and durability.
+
+    Usage:
+      - Increase ``embed_batch_size`` on machines with more RAM for faster ingestion.
+      - Decrease ``max_doc_size_mb`` to enforce strict document size limits for your use case.
+      - Set ``bm25_persist=true`` to snapshot the BM25 index after warm-start (faster restarts).
+    """
+
+    embed_batch_size: int = Field(
+        32, ge=1, le=512,
+        description="Number of chunks embedded per batch during ingestion (higher = faster, more RAM)",
+    )
+    max_doc_size_mb: float = Field(
+        200.0, gt=0,
+        description="Maximum allowed document size in MB. Larger files raise a 400 error.",
+    )
+    bm25_persist: bool = Field(
+        True,
+        description="If true, snapshot the BM25 index to disk after warm-start for faster restarts.",
+    )
+    max_concurrent_requests: int = Field(
+        5, ge=1, le=100,
+        description="Soft concurrency hint — used for documentation; enforcement via rate limiting.",
+    )
+
+
 # ── Schema: RAG Profile ───────────────────────────────────────────────────────
 
 
@@ -89,6 +123,12 @@ class RagProfile(BaseModel):
     confidence_thresholds: ConfidenceThresholds = Field(
         default_factory=ConfidenceThresholds,
         description="Score boundaries for HIGH / MEDIUM / LOW / INSUFFICIENT verdict",
+    )
+
+    # ── Scale hints (operational tuning, does not affect retrieval quality) ───
+    scale_hints: ScaleHints = Field(
+        default_factory=ScaleHints,
+        description="Ingestion throughput and durability tuning for this profile",
     )
 
 
@@ -375,7 +415,7 @@ def delete_profile(profile_id: str):
     response_model=RagAnswer,
     summary="Unified RAG query — production agentic endpoint",
 )
-def rag_query(req: RagRequest):
+async def rag_query(req: RagRequest):
     """
     **Production-grade single-call RAG endpoint for agentic AI integration.**
 
@@ -420,6 +460,8 @@ def rag_query(req: RagRequest):
     - `graph` — knowledge graph entities and relation paths (if graph methods enabled)
     - `llm_traces` — every LLM call made: prompt, response, latency (for observability)
     """
+    import asyncio
+
     # ── 1. Resolve effective configuration ────────────────────────────────────
     profile: Optional[RagProfile] = None
     if req.profile_id:
@@ -449,17 +491,22 @@ def rag_query(req: RagRequest):
         enable_mmr=methods.enable_mmr,
     )
 
-    # ── 3. Phase 1 — Query expansion (runs once, backend-agnostic LLM calls) ─
-    _pipeline, bundle, expansion_traces = _expand_query(config, req.query)
+    # ── 3. Phase 1 — Query expansion (once, backend-agnostic LLM calls) ──────
+    # Run in a thread so the FastAPI event loop stays unblocked
+    _pipeline, bundle, expansion_traces = await asyncio.to_thread(
+        _expand_query, config, req.query
+    )
 
     # ── 4. Phase 2 — Retrieval + reranking + answer ───────────────────────────
-    result = _run_search_with_bundle(
-        config=config,
-        query=req.query,
-        top_k=top_k,
-        bundle=bundle,
-        expansion_traces=expansion_traces,
-        methods_used=methods.model_dump(),
+    # Also offloaded to thread — CPU-bound embedding + BM25 must not block
+    result = await asyncio.to_thread(
+        _run_search_with_bundle,
+        config,
+        req.query,
+        top_k,
+        bundle,
+        expansion_traces,
+        methods.model_dump(),
     )
 
     if result.error:

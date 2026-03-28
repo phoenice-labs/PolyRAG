@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { runEvaluation, browseChunks, generateQA, type QAPair, type EvalResult, type EvalScore, type RetrievalMethodsReq, type BrowseChunk } from '../api/evaluate'
 import { getCollections, type Collection } from '../api/backends'
+import { useStore } from '../store'
+import { bestMatchCollection, collectionLabel } from '../utils/collectionName'
+import RetrievalTrace from '../components/RetrievalTrace/RetrievalTrace'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -440,10 +443,10 @@ function EvaluateGuideModal({ onClose }: { onClose: () => void }) {
               <ol className="space-y-1 list-decimal list-inside text-gray-400">
                 <li>Open the browser — browse or search chunks by keyword.</li>
                 <li>Click a chunk to select and read it in full.</li>
-                <li>Click <span className="text-white">"Generate Q&A"</span> — the LLM (LM Studio) produces a question and expected answer grounded in that chunk's content.</li>
+                <li>Click <span className="text-white">"Generate Q&A"</span> — your configured LLM produces a question and expected answer grounded in that chunk's content.</li>
                 <li>Click <span className="text-white">"Add to Evaluation"</span> — the pair is added to your Q&A list ready to run.</li>
               </ol>
-              <p className="text-yellow-400 mt-2">⚠ Requires LM Studio running locally at localhost:1234. Without it, generation is skipped.</p>
+              <p className="text-yellow-400 mt-2">⚠ Requires a configured LLM provider (set in Settings → LLM Configuration). Without it, generation is skipped.</p>
             </div>
           </section>
 
@@ -468,12 +471,14 @@ function EvaluateGuideModal({ onClose }: { onClose: () => void }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function EvaluationStudio() {
+  const { activeCollection } = useStore()
+
   // Guide modal
   const [showGuide, setShowGuide] = useState(false)
 
-  // Step 1
-  const [collectionName, setCollectionName] = useState('polyrag_docs')
-  const [collectionInput, setCollectionInput] = useState('polyrag_docs')
+  // Step 1 — seed from Zustand activeCollection (already scoped, e.g. "polyrag_docs_minilm")
+  const [collectionName, setCollectionName] = useState(activeCollection || 'polyrag_docs')
+  const [collectionInput, setCollectionInput] = useState(activeCollection || 'polyrag_docs')
   const [selectedBackends, setSelectedBackends] = useState<string[]>(['milvus'])
   const [backendCollections, setBackendCollections] = useState<Record<string, Collection[]>>({})
 
@@ -502,6 +507,17 @@ export default function EvaluationStudio() {
         .catch(() => {})
     })
   }, [])
+
+  // Auto-select: if current collectionName doesn't exist in any backend, pick the first known one.
+  useEffect(() => {
+    if (Object.keys(backendCollections).length === 0) return
+    const known = [...new Set(Object.values(backendCollections).flat().map((c) => c.name))].sort()
+    if (known.length === 0) return
+    if (!known.includes(collectionName) && known[0]) {
+      setCollectionName(known[0])
+      setCollectionInput(known[0])
+    }
+  }, [backendCollections]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const allCollectionNames = [...new Set(
     Object.values(backendCollections).flat().map((c) => c.name)
@@ -828,6 +844,15 @@ export default function EvaluationStudio() {
                                               <ScoreBar label="G" value={res.scores.graph_source_hit} color="bg-indigo-500" />
                                             )}
                                           </div>
+                                          {res.method_contributions && Object.keys(res.method_contributions).length > 0 && (
+                                            <div className="mt-2">
+                                              <RetrievalTrace
+                                                methodContributions={res.method_contributions}
+                                                answer={res.answer}
+                                                label="Method Traceability"
+                                              />
+                                            </div>
+                                          )}
                                           {((res.graph_entities?.length ?? 0) > 0 || (res.graph_paths?.length ?? 0) > 0) && (
                                             <div className="mt-3 space-y-2">
                                               {(res.graph_entities?.length ?? 0) > 0 && (

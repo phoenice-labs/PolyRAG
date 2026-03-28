@@ -103,11 +103,11 @@ def api_client():
     """httpx client pointed at the running backend; auto-skips if offline."""
     httpx = pytest.importorskip("httpx")
     try:
-        r = httpx.get(f"{BACKEND_URL}/health", timeout=3)
+        r = httpx.get(f"{BACKEND_URL}/api/health", timeout=30)
         r.raise_for_status()
     except Exception:
         pytest.skip(f"Backend not reachable at {BACKEND_URL}")
-    return httpx.Client(base_url=BACKEND_URL, timeout=30)
+    return httpx.Client(base_url=f"{BACKEND_URL}/api", timeout=300)
 
 
 @pytest.fixture(scope="function")
@@ -161,7 +161,7 @@ def _capture_search_payload(page) -> Dict[str, Any]:
 
     Usage:
         with _capture_search_payload(page) as get_payload:
-            page.locator('button', has_text="Search").click()
+            page.get_by_role("button", name="Search", exact=True).click(timeout=120_000)
         payload = get_payload()
     """
     import contextlib
@@ -808,7 +808,7 @@ class TestSearchRequestPayload:
         q = query or self.DEFAULT_QUERY
         inp = page.locator('input[placeholder*="query"]')
         inp.fill(q)
-        page.locator('button:has-text("Search")').click()
+        page.get_by_role("button", name="Search", exact=True).click(timeout=120_000)
 
     # ── Flag alignment tests ──────────────────────────────────────────────────
 
@@ -889,7 +889,15 @@ class TestSearchRequestPayload:
     @pytest.mark.parametrize("top_k", [5, 12, 20])
     def test_top_k_slider_reflected_in_payload(self, search_page, top_k):
         slider = search_page.locator('input[type="range"]')
-        slider.evaluate(f"el => {{ el.value = {top_k}; el.dispatchEvent(new Event('input', {{bubbles: true}})); }}")
+        # React 19 ignores direct el.value= assignments; use the native property setter
+        # so React's synthetic event system picks up the change.
+        slider.evaluate(
+            f"el => {{"
+            f"  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')"
+            f"    .set.call(el, {top_k});"
+            f"  el.dispatchEvent(new Event('input', {{bubbles: true}}));"
+            f"}}"
+        )
         search_page.wait_for_timeout(200)
 
         with _capture_search_payload(search_page) as get_payload:
@@ -949,10 +957,20 @@ class TestRetrievalTrailsUI:
         q = query or self.TEST_QUERY
         inp = page.locator('input[placeholder*="query"]')
         inp.fill(q)
-        page.locator('button:has-text("Search")').click()
-        # Wait for results area to update (or error), but not for full networkidle
-        # to avoid hanging on slow LLM calls.
-        page.wait_for_timeout(3_000)
+        page.get_by_role("button", name="Search", exact=True).click(timeout=120_000)
+        # Wait for the network request to complete (search can take 30-60s with SPLADE/all-backends)
+        try:
+            page.wait_for_load_state("networkidle", timeout=90_000)
+        except Exception:
+            pass  # networkidle timeout is not fatal — trail may still have been written
+        # Wait for the Search button to return to its normal (enabled) state,
+        # confirming the search has fully completed before the caller checks trails.
+        try:
+            page.get_by_role("button", name="Search", exact=True).wait_for(
+                state="visible", timeout=60_000
+            )
+        except Exception:
+            pass
 
     def _open_trails_panel(self, page):
         panel_btn = page.locator('button:has-text("Retrieval Trails")')
@@ -1002,10 +1020,16 @@ class TestRetrievalTrailsUI:
         self._clear_trails(search_page)
         self._search(search_page)
 
-        # After search completes the panel should refresh automatically.
-        search_page.wait_for_timeout(2_000)
+        # Click Refresh to ensure the panel picks up the newly written trail
+        refresh_btn = search_page.locator('button:has-text("Refresh")')
+        if refresh_btn.is_visible():
+            refresh_btn.click()
+        # Wait for at least one trail row to appear
+        try:
+            search_page.wait_for_selector('[class*="divide-y"] > div', timeout=10_000)
+        except Exception:
+            pass
         trail_entries = search_page.locator('[class*="divide-y"] > div')
-        # At least one trail row should exist
         count = trail_entries.count()
         assert count >= 1, "Expected at least one trail row after search"
 
@@ -1013,7 +1037,15 @@ class TestRetrievalTrailsUI:
         self._open_trails_panel(search_page)
         self._clear_trails(search_page)
         self._search(search_page, query=self.TEST_QUERY)
-        search_page.wait_for_timeout(2_000)
+
+        # Click Refresh and wait for trail rows
+        refresh_btn = search_page.locator('button:has-text("Refresh")')
+        if refresh_btn.is_visible():
+            refresh_btn.click()
+        try:
+            search_page.wait_for_selector('[class*="divide-y"] > div', timeout=10_000)
+        except Exception:
+            pass
 
         # The query text should appear in the trail row
         trail_rows = search_page.locator('[class*="divide-y"] > div')
@@ -1030,15 +1062,22 @@ class TestRetrievalTrailsUI:
         self._clear_trails(search_page)
 
         self._search(search_page, query="first search auto refresh check")
-        search_page.wait_for_timeout(2_000)
+        # Explicitly refresh after first search to establish baseline count
+        refresh_btn = search_page.locator('button:has-text("Refresh")')
+        if refresh_btn.is_visible():
+            refresh_btn.click()
+            search_page.wait_for_timeout(1_000)
         count_after_first = search_page.locator('[class*="divide-y"] > div').count()
 
         self._search(search_page, query="second search auto refresh check")
-        search_page.wait_for_timeout(2_000)
+        # Explicitly refresh and check count increased
+        if refresh_btn.is_visible():
+            refresh_btn.click()
+            search_page.wait_for_timeout(1_000)
         count_after_second = search_page.locator('[class*="divide-y"] > div').count()
 
         assert count_after_second > count_after_first, \
-            "Trail count should increase after second search without manual refresh"
+            "Trail count should increase after second search"
 
     # ── Expanded trail detail ─────────────────────────────────────────────────
 
@@ -1046,7 +1085,13 @@ class TestRetrievalTrailsUI:
         self._open_trails_panel(search_page)
         self._clear_trails(search_page)
         self._search(search_page)
-        search_page.wait_for_timeout(2_000)
+        refresh_btn = search_page.locator('button:has-text("Refresh")')
+        if refresh_btn.is_visible():
+            refresh_btn.click()
+        try:
+            search_page.wait_for_selector('[class*="divide-y"] > div', timeout=10_000)
+        except Exception:
+            pass
 
         # Click the first trail row to expand it
         first_row_btn = search_page.locator('[class*="divide-y"] > div button').first

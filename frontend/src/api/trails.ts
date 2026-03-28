@@ -6,6 +6,14 @@ export interface RetrievalTrailStep {
   candidates_after: number
 }
 
+export interface MethodContributionStats {
+  candidates_before?: number
+  candidates_after?: number
+  delta?: number
+  chunks_contributed?: number
+  contribution_pct?: number
+}
+
 export interface RetrievalTrailRecord {
   timestamp: string
   query: string
@@ -21,6 +29,8 @@ export interface RetrievalTrailRecord {
     hyde_text?: string
     stepback?: string
   }
+  /** Per-method marginal contribution stats computed after each search. */
+  method_contributions?: Record<string, MethodContributionStats>
 }
 
 export const fetchRetrievalTrails = async (

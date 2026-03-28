@@ -114,6 +114,22 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks) -> Dict:
             raise HTTPException(status_code=400, detail=f"Cannot read corpus_path: {exc}")
 
     store = get_job_store()
+
+    # ── Collection lock check: reject if another job is already ingesting this collection ──
+    running = await store.get_running_jobs_for_collection(req.collection_name)
+    if running:
+        conflicting = running[0]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "Collection is currently being ingested — concurrent ingestion may corrupt the index",
+                "collection": req.collection_name,
+                "blocking_job_id": conflicting.id,
+                "blocking_backend": conflicting.backend,
+                "blocking_status": conflicting.status,
+            },
+        )
+
     job_ids: Dict[str, str] = {}
 
     for backend in req.backends:
@@ -124,13 +140,39 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks) -> Dict:
             chunk_strategy=req.chunk_strategy,
             overlap=req.overlap,
             enable_er=req.enable_er,
+            enable_splade=req.enable_splade,
             embedding_model=req.embedding_model,
         )
-        job = await store.create_job(backend=backend, corpus_path=req.corpus_path, config=config)
+        # Store the scoped collection name so lock checks work correctly
+        scoped_collection = config.get("ingestion", {}).get("collection_name", req.collection_name)
+        job = await store.create_job(
+            backend=backend,
+            corpus_path=req.corpus_path,
+            config=config,
+            collection_name=scoped_collection,
+        )
         job_ids[backend] = job.id
         background_tasks.add_task(_run_ingest, job.id, text, config, store)
 
     return {"job_ids": job_ids}
+
+
+@router.get("/ingest/jobs")
+async def list_ingest_jobs() -> list:
+    """Return all ingest jobs (used by nav badge and multi-user lock awareness)."""
+    store = get_job_store()
+    jobs = await store.list_jobs()
+    return [
+        {
+            "id": j.id,
+            "status": j.status,
+            "backend": j.backend,
+            "collection_name": j.collection_name,
+            "created_at": j.created_at,
+            "updated_at": j.updated_at,
+        }
+        for j in jobs
+    ]
 
 
 @router.get("/ingest/{job_id}/stream")

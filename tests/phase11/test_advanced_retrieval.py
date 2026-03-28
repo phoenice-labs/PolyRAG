@@ -592,7 +592,7 @@ class TestConfigPhase11:
     def test_config_has_advanced_retrieval_section(self):
         import yaml, pathlib
         cfg_path = pathlib.Path("config/config.yaml")
-        with open(cfg_path) as f:
+        with open(cfg_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         assert "advanced_retrieval" in cfg
         adv = cfg["advanced_retrieval"]
@@ -602,7 +602,7 @@ class TestConfigPhase11:
 
     def test_config_raptor_defaults(self):
         import yaml, pathlib
-        with open(pathlib.Path("config/config.yaml")) as f:
+        with open(pathlib.Path("config/config.yaml"), encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         raptor = cfg["advanced_retrieval"]["raptor"]
         assert isinstance(raptor.get("n_clusters"), int)
@@ -610,7 +610,7 @@ class TestConfigPhase11:
 
     def test_config_mmr_defaults(self):
         import yaml, pathlib
-        with open(pathlib.Path("config/config.yaml")) as f:
+        with open(pathlib.Path("config/config.yaml"), encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         mmr = cfg["advanced_retrieval"]["mmr"]
         assert "diversity_weight" in mmr
@@ -618,7 +618,7 @@ class TestConfigPhase11:
 
     def test_config_graph_llm_extraction(self):
         import yaml, pathlib
-        with open(pathlib.Path("config/config.yaml")) as f:
+        with open(pathlib.Path("config/config.yaml"), encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         graph = cfg.get("graph", {})
         assert "llm_extraction" in graph

@@ -11,9 +11,9 @@ import asyncio
 import uuid
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Response
 
-from api.deps import build_pipeline_config, create_pipeline, get_eval_store
+from api.deps import build_pipeline_config, create_pipeline, get_eval_store, persist_eval
 from api.schemas import EvaluateRequest, RetrievalMethods
 
 router = APIRouter(tags=["evaluate"])
@@ -71,7 +71,44 @@ def _score_answer(
         "relevance":       round(min(relevance, 1.0), 4),
         "source_hit":      float(source_hit),
         "graph_source_hit": graph_source_hit,
+        "score_type":      "heuristic",  # word-overlap only — not LLM-judged; see 'ragas' block for semantic scores
     }
+
+
+def _ragas_scores_for(
+    question: str,
+    answer: str,
+    chunks,
+    expected_answer: str,
+) -> Dict[str, Any]:
+    """
+    Compute RAGAS metrics (LLM-judged) for one Q&A pair.
+
+    Returns a dict ready to merge into the per-backend score block.
+    Always returns a dict — keys are None when RAGAS/LM Studio is unavailable.
+    """
+    try:
+        from core.evaluation.ragas_scorer import get_ragas_scorer
+        scorer = get_ragas_scorer()
+        if not scorer.is_available():
+            return {"ragas": None, "ragas_unavailable_reason": "LM Studio offline"}
+
+        contexts = []
+        for chunk in (chunks or []):
+            doc = getattr(chunk, "document", None)
+            text = (getattr(doc, "text", "") if doc else getattr(chunk, "text", "")) or ""
+            if text.strip():
+                contexts.append(text.strip())
+
+        result = scorer.score(
+            question=question,
+            answer=answer,
+            contexts=contexts[:10],  # cap at 10 chunks (RAGAS processes each via LLM)
+            ground_truth=expected_answer,
+        )
+        return {"ragas": result.as_dict()}
+    except Exception as exc:
+        return {"ragas": None, "ragas_error": str(exc)}
 
 
 def _run_evaluate(
@@ -139,6 +176,27 @@ def _run_evaluate(
                 # Fallback: plain ask() when expansion failed
                 resp = pipeline.ask(question, top_k=5)
 
+            # Compute method contributions from chunk lineages
+            eval_chunks = resp.results or []
+            eval_method_count: dict = {}
+            eval_total = len(eval_chunks)
+            for r in eval_chunks:
+                meta = r.document.metadata if r.document.metadata else {}
+                raw_lineage = meta.get("_method_lineage", [])
+                seen = set()
+                for m in (raw_lineage if isinstance(raw_lineage, list) else []):
+                    method_name = m["method"] if isinstance(m, dict) else getattr(m, "method", "")
+                    if method_name and method_name not in seen:
+                        eval_method_count[method_name] = eval_method_count.get(method_name, 0) + 1
+                        seen.add(method_name)
+            method_contributions = {
+                method: {
+                    "chunks_contributed": count,
+                    "contribution_pct": round(count / eval_total * 100, 1) if eval_total > 0 else 0.0,
+                }
+                for method, count in eval_method_count.items()
+            }
+
             scores = _score_answer(
                 resp.answer, expected_answer, question, expected_sources, resp.results,
                 graph_chunks=[
@@ -153,11 +211,19 @@ def _run_evaluate(
                     )
                 ],
             )
+            ragas_block = _ragas_scores_for(
+                question=question,
+                answer=resp.answer,
+                chunks=resp.results or [],
+                expected_answer=expected_answer,
+            )
             per_backend[backend] = {
                 "answer": resp.answer,
                 "scores": scores,
+                **ragas_block,
                 "graph_entities": list(resp.graph_entities or []),
                 "graph_paths": [str(p) for p in (resp.graph_paths or [])],
+                "method_contributions": method_contributions,
             }
         except Exception as exc:
             per_backend[backend] = {"error": str(exc), "scores": {}}
@@ -196,6 +262,7 @@ async def start_evaluate(req: EvaluateRequest) -> Dict:
         })
 
     store[eval_id] = {"eval_id": eval_id, "results": eval_results}
+    persist_eval(eval_id, store[eval_id])   # best-effort disk write; in-memory store is source of truth
     return {"eval_id": eval_id, "question_count": len(req.questions)}
 
 
@@ -302,7 +369,142 @@ async def list_evaluations() -> Dict:
     return {"eval_ids": list(store.keys())}
 
 
+@router.get("/evaluate/ragas-status")
+async def ragas_status() -> Dict:
+    """
+    Check whether RAGAS scoring is available.
+
+    RAGAS requires LM Studio running at localhost:1234.
+    When unavailable, /api/evaluate still runs with word-overlap scores;
+    the 'ragas' block in each per-backend result will be null.
+
+    Returns:
+        available: bool — true when LM Studio is reachable and RAGAS can score
+        scorer:    str  — ragas version string
+        reason:    str  — why unavailable (if applicable)
+    """
+    from core.evaluation.ragas_scorer import get_ragas_scorer, _ragas_version
+    scorer = get_ragas_scorer()
+    available = scorer.is_available()
+    return {
+        "available": available,
+        "scorer": f"ragas-{_ragas_version()}",
+        "llm": "lm-studio (localhost:1234)",
+        "metrics": ["faithfulness", "answer_relevancy", "context_precision", "context_recall"],
+        "reason": None if available else "LM Studio offline or not reachable at localhost:1234",
+    }
+
+
 # Parameterised route LAST so static paths above take priority
+@router.get("/evaluate/{eval_id}/export")
+async def export_evaluate(eval_id: str, format: str = "json") -> Response:
+    """Export evaluation results as CSV or JSON.
+
+    - format=json (default) — full result as pretty-printed JSON attachment
+    - format=csv — flat table: question | expected_answer | backend | heuristic scores | ragas scores | answer
+    """
+    store = get_eval_store()
+    result = store.get(eval_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+
+    fname = f"eval_{eval_id[:8]}"
+    if format == "csv":
+        import csv, io
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "question", "expected_answer", "backend",
+            "faithfulness_heuristic", "relevance", "source_hit",
+            "ragas_faithfulness", "ragas_answer_relevancy",
+            "ragas_context_precision", "ragas_context_recall",
+            "answer",
+        ])
+        for row in result.get("results", []):
+            for backend, bdata in row.get("per_backend", {}).items():
+                if "error" in bdata:
+                    continue
+                scores = bdata.get("scores", {})
+                ragas = bdata.get("ragas") or {}
+                writer.writerow([
+                    row.get("question", ""),
+                    row.get("expected_answer", ""),
+                    backend,
+                    scores.get("faithfulness", ""),
+                    scores.get("relevance", ""),
+                    scores.get("source_hit", ""),
+                    ragas.get("faithfulness", "") if isinstance(ragas, dict) else "",
+                    ragas.get("answer_relevancy", "") if isinstance(ragas, dict) else "",
+                    ragas.get("context_precision", "") if isinstance(ragas, dict) else "",
+                    ragas.get("context_recall", "") if isinstance(ragas, dict) else "",
+                    bdata.get("answer", ""),
+                ])
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}.csv"'},
+        )
+    else:
+        import json
+        return Response(
+            content=json.dumps(result, default=str, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{fname}.json"'},
+        )
+
+
+@router.post("/evaluate/import-qa")
+async def import_qa(body: Dict = Body(...)) -> Dict:
+    """Import Q&A pairs for use in EvaluationStudio.
+
+    Accepts either:
+      - JSON list: {"items": [{"question": ..., "expected_answer": ..., "expected_sources": [...]}]}
+      - CSV text: {"csv": "question,expected_answer,expected_sources\\nQ1,A1,src1;src2\\n..."}
+        (expected_sources is semicolon-separated within the cell)
+
+    Returns: {"imported_count": N, "items": [...], "errors": [...]}
+    """
+    items: list = []
+    errors: list = []
+
+    if "csv" in body:
+        import csv, io
+        try:
+            reader = csv.DictReader(io.StringIO(body["csv"]))
+            for i, row in enumerate(reader, start=1):
+                q = (row.get("question") or "").strip()
+                a = (row.get("expected_answer") or "").strip()
+                s = [x.strip() for x in (row.get("expected_sources") or "").split(";") if x.strip()]
+                if q and a:
+                    items.append({"question": q, "expected_answer": a, "expected_sources": s})
+                else:
+                    errors.append(f"Row {i}: missing question or expected_answer — skipped")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"CSV parse error: {exc}")
+
+    elif "items" in body:
+        for i, item in enumerate(body.get("items", [])):
+            q = (item.get("question") or "").strip()
+            a = (item.get("expected_answer") or "").strip()
+            s = item.get("expected_sources", [])
+            if q and a:
+                items.append({
+                    "question": q,
+                    "expected_answer": a,
+                    "expected_sources": s if isinstance(s, list) else [s],
+                })
+            else:
+                errors.append(f"Item {i}: missing question or expected_answer — skipped")
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide 'items' (JSON array) or 'csv' (CSV text with header row)",
+        )
+
+    return {"imported_count": len(items), "items": items, "errors": errors}
+
+
 @router.get("/evaluate/{eval_id}")
 async def get_evaluate(eval_id: str) -> Dict:
     """Return full evaluation results."""

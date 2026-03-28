@@ -59,7 +59,7 @@ class RAGPipeline:
         self.splade_index = None
         if splade_enabled:
             from core.retrieval.splade import SparseNeuralIndex
-            splade_model = splade_cfg.get("model", "naver/splade-v3")
+            splade_model = splade_cfg.get("model", "naver/splade-cocondenser-selfdistil")
             splade_persist = splade_cfg.get("persist_dir", "./data/splade")
             self.splade_index = SparseNeuralIndex(
                 model_name=splade_model,
@@ -224,6 +224,8 @@ class RAGPipeline:
             model=llm_cfg.get("model", "mistralai/ministral-3b"),
             temperature=llm_cfg.get("temperature", 0.2),
             max_tokens=llm_cfg.get("max_tokens", 512),
+            api_key=llm_cfg.get("api_key", ""),
+            provider=llm_cfg.get("provider", "lm_studio"),
         )
         self._context_tracker = ConversationContextTracker(
             max_turns=llm_cfg.get("context_turns", 5)
@@ -256,11 +258,16 @@ class RAGPipeline:
                 self._graph_store.connect()
 
                 # ── Restore graph from snapshot (persists across restarts) ──
-                _snapshot_path = (
-                    Path(__file__).resolve().parent.parent
-                    / "data" / "graphs"
-                    / f"{self.ingestor.collection_name}.json"
+                _graphs_dir = (
+                    Path(__file__).resolve().parent.parent / "data" / "graphs"
                 )
+                _snapshot_path = _graphs_dir / f"{self.ingestor.collection_name}.json"
+                # Fallback: snapshots created before model-slug scoping lack the suffix
+                if not _snapshot_path.exists():
+                    _base_name = self.ingestor.collection_name.rsplit("_", 1)[0]
+                    _fallback_path = _graphs_dir / f"{_base_name}.json"
+                    if _fallback_path.exists():
+                        _snapshot_path = _fallback_path
                 if _snapshot_path.exists():
                     try:
                         self._load_graph_snapshot(_snapshot_path)
@@ -387,8 +394,26 @@ class RAGPipeline:
         coll = collection or self.ingestor.collection_name
         if not self.store.collection_exists(coll):
             return 0
+
+        # Milvus enforces (offset+limit) <= 16384; paginate in chunks to stay within limits.
+        _PAGE_SIZE = 10_000
+        raw: list = []
         try:
-            raw = self.store.fetch_all(coll, limit=100_000)
+            offset = 0
+            while True:
+                try:
+                    page = self.store.fetch_all(coll, limit=_PAGE_SIZE, offset=offset)
+                except TypeError:
+                    # Adapter doesn't support offset — fall back to single-page fetch
+                    page = self.store.fetch_all(coll, limit=_PAGE_SIZE)
+                    raw.extend(page)
+                    break
+                if not page:
+                    break
+                raw.extend(page)
+                if len(page) < _PAGE_SIZE:
+                    break
+                offset += _PAGE_SIZE
         except NotImplementedError:
             pipeline_logger.warning(
                 "Warm-start skipped — adapter has no fetch_all()",
@@ -442,7 +467,7 @@ class RAGPipeline:
         # Batch-encode with SPLADE if disk load was not available
         if splade_docs_to_encode:
             pipeline_logger.info(
-                "SPLADE warm-start: encoding %d chunks (first startup, model may download ~400 MB)",
+                "SPLADE warm-start: encoding %d chunks (first startup, model may download ~110 MB)",
                 len(splade_docs_to_encode),
                 collection=coll,
             )
@@ -938,22 +963,27 @@ class RAGPipeline:
     def _fallback_retrieve(self, query_text, coll, top_k, filters, use_multistage,
                            enable_dense: bool = True, enable_bm25: bool = True,
                            enable_splade: bool = True):
-        """Hybrid fallback when graph is not available."""
-        if self._hybrid_retriever and not (enable_dense and enable_bm25):
+        """Hybrid fallback when graph is not available.
+
+        Always routes through the HybridRetriever so that enable_dense /
+        enable_bm25 / enable_splade flags are honoured correctly.  The old
+        code routed to MultiStageRetriever (which embeds a cross-encoder
+        internally) when both dense and BM25 were enabled, which caused two
+        problems:
+          (a) Cross-Encoder Rerank appeared in the trace even when the user
+              had disabled it (enable_rerank=False), because the multistage
+              always applied it.
+          (b) The SPLADE flag was ignored on the multistage path.
+        Cross-Encoder reranking is now applied exclusively in query() at the
+        caller level, gated by enable_rerank.
+        """
+        if self._hybrid_retriever:
             return self._hybrid_retriever.search(
                 query=query_text, top_k=top_k, filters=filters,
                 enable_dense=enable_dense, enable_bm25=enable_bm25,
                 enable_splade=enable_splade,
             )
-        if use_multistage and self._multistage:
-            results = self._multistage.retrieve(query_text, top_k=top_k, filters=filters)
-            # Tag Cross-Encoder rerank as post-processor (MultiStageRetriever always applies it)
-            for r in results:
-                pp = r.document.metadata.get("_post_processors", [])
-                if "Cross-Encoder Rerank" not in pp:
-                    pp.append("Cross-Encoder Rerank")
-                r.document.metadata["_post_processors"] = pp
-            return results
+        # Last-resort fallback: raw vector query (no BM25 / SPLADE)
         q_vec = self.embedder.embed_one(query_text)
         return self.store.query(coll, q_vec, top_k=top_k, filters=filters)
 
@@ -1023,7 +1053,9 @@ class RAGPipeline:
 
         # Phase 5: LLM answer generation
         answer = ""
-        if lm_available:
+        if not results:
+            answer = "Insufficient evidence — no documents were retrieved with the selected retrieval methods. Please check that the collection has been ingested with the required index (e.g., SPLADE must be built at ingest time), or broaden your search by enabling additional retrieval methods."
+        elif lm_available:
             context_text = "\n\n".join(
                 f"[{i+1}] {r.document.text[:600]}" for i, r in enumerate(results[:5])
             )
@@ -1051,7 +1083,6 @@ class RAGPipeline:
             answer = (
                 f"[LM Studio offline — retrieval only]\n"
                 + "\n\n".join(f"[{i+1}] {r.document.text[:300]}" for i, r in enumerate(results[:3]))
-                if results else "No results found."
             )
 
         elapsed_ms = round((time.perf_counter() - t_start) * 1000)
@@ -1172,7 +1203,9 @@ class RAGPipeline:
 
         # Answer generation (backend-specific — uses this backend's retrieved chunks)
         answer = ""
-        if lm_available:
+        if not results:
+            answer = "Insufficient evidence — no documents were retrieved with the selected retrieval methods. Please check that the collection has been ingested with the required index (e.g., SPLADE must be built at ingest time), or broaden your search by enabling additional retrieval methods."
+        elif lm_available:
             context_text = "\n\n".join(
                 f"[{i+1}] {r.document.text[:600]}" for i, r in enumerate(results[:5])
             )
@@ -1198,7 +1231,6 @@ class RAGPipeline:
             answer = (
                 "[LM Studio offline — retrieval only]\n"
                 + "\n\n".join(f"[{i+1}] {r.document.text[:300]}" for i, r in enumerate(results[:3]))
-                if results else "No results found."
             )
 
         elapsed_ms = round((time.perf_counter() - t_start) * 1000)
