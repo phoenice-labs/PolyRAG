@@ -491,9 +491,9 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every PR to `main`:
 
 | Job | What it checks |
 |-----|---------------|
-| `Tests (Python 3.10)` | Fast test subset + `tests/phase13/test_rag_router.py` (28 tests) |
+| `Tests (Python 3.10)` | Core test suite + API router integration tests |
 | `Tests (Python 3.11)` | Same matrix leg on Python 3.11 |
-| `Import sanity check` | All routers importable; no circular dependency |
+| `Import sanity check` | All routers importable; no circular dependencies |
 
 ```bash
 # Reproduce CI locally
@@ -505,67 +505,9 @@ Recommended branch protection: **Settings → Branches → Require status checks
 
 ---
 
-## Backlog & Roadmap
+## Contributing & Roadmap
 
-See [BACKLOG.md](./BACKLOG.md) for the full 11-phase development plan with
-per-phase test exit criteria and evaluation benchmarks.
-
----
-
-## Future: Metadata + Faceted Filtering
-
-The codebase stores rich per-chunk metadata (`doc_id`, `source`, `section_title`, `chunk_strategy`, `classification`, `start_char`, `end_char`, user-provided fields) and already supports `filters: Optional[Dict]` at the pipeline and adapter layers. The items below extend that foundation toward full faceted search.
-
-### Already Implemented ✅
-| Component | Status |
-|-----------|--------|
-| `filters=` on `pipeline.query()` / `pipeline.ask()` | ✅ |
-| Pre-search native filtering — Qdrant, Weaviate, Milvus, PGVector, ChromaDB | ✅ |
-| Post-fusion `MetadataFilter.apply()` in `HybridRetriever` | ✅ |
-| `filters=` passed through `TripleHybridRetriever` → `HybridRetriever` | ✅ |
-| **BM25 `filters=` parameter (post-rank, pre-fusion)** | ✅ fixed |
-
-### Pending — Retrieval Layer
-| Item | File | What to do |
-|------|------|-----------|
-| Pass `filters=` to `RaptorIndexer.retrieve()` | `core/retrieval/raptor.py` | Forward to `store.query()` on the `_raptor` collection |
-| `pre_filters=` on `CrossEncoderReRanker.rerank()` | `core/retrieval/multistage.py` | Apply `MetadataFilter` before expensive cross-encoder scoring |
-| `pre_filters=` on `MMRReranker.rerank()` | `core/retrieval/mmr.py` | Narrow diversity candidate pool before MMR selection |
-| `pre_filters=` on `ContextualReranker.rerank()` | `core/retrieval/contextual_reranker.py` | Pre-filter before LLM context scoring |
-| Forward `filters=` to `MultiQueryGenerator` sub-queries | `core/query/rewriter.py` | Each parallel sub-query should carry the same filter |
-
-### Pending — Graph Layer
-| Item | File | What to do |
-|------|------|-----------|
-| `filters=` on `GraphTraverser.traverse()` | `core/graph/traversal.py` | Apply `MetadataFilter` to traversal results post-graph-walk |
-| Node-property filtering in Cypher | `core/graph/store_kuzu.py` | Add `WHERE n.source = $source` / `n.entity_type IN [...]` to Kuzu queries |
-
-### Pending — Adapter Layer (Richer Operators)
-| Item | What to do |
-|------|-----------|
-| Unified `FilterCondition` model (`field`, `op`, `value`) | New `core/store/filter_translator.py` — translate once per backend instead of per-adapter ad-hoc dicts |
-| Range queries (`gt`, `gte`, `lt`, `lte`) | Qdrant `Range`, Weaviate `.greater_than()`, Milvus SQL `>`, PGVector `::numeric >`, FAISS in-memory |
-| Multi-value (`in` operator) | Qdrant `MatchAny`, Weaviate `.contains_any()`, Milvus `IN [...]`, PGVector `= ANY(...)` |
-| OR groups across conditions | `{"$or": [{...}, {...}]}` → backend-specific OR dialect |
-
-### Pending — API Layer
-| Item | File | What to do |
-|------|------|-----------|
-| Add `filters: List[FilterCondition]` to `SearchRequest` | `api/schemas.py` | Expose filtering to REST clients |
-| Pass filters through `_run_search_with_bundle()` | `api/routers/search.py` | Wire `SearchRequest.filters` into the retrieval call |
-| Add `facets: List[FacetRequest]` to `SearchRequest` | `api/schemas.py` | Fields the client wants count buckets for |
-| Return `FacetResult[]` in `SearchResponse` | `api/schemas.py` | `[{field, buckets: [{value, count}]}]` |
-
-### Pending — Facet Engine
-| Item | File | What to do |
-|------|------|-----------|
-| `FacetEngine.compute_facets(results, fields)` | `core/retrieval/facet_engine.py` (new) | Count unique values per metadata field across result window |
-| `FacetEngine.apply_facet_filter(results, selected)` | same | OR within a field, AND across fields (standard e-commerce behavior) |
-
-### Pending — Query Intelligence (Optional / Advanced)
-| Item | File | What to do |
-|------|------|-----------|
-| `QueryRewriter.extract_filters(query)` | `core/query/rewriter.py` | Use LLM to detect filter intent in natural language, e.g. *"Hamlet quotes from Act 3"* → `{section_title contains "Act 3"}` |
+Contributions welcome — open an issue or PR. See [TODO.md](./TODO.md) for tracked improvements.
 
 ---
 
@@ -597,7 +539,7 @@ All components are open-source with permissive licences. No OpenAI API key requi
 
 ---
 
-## Phase 13 – Browser UI (React 19 + FastAPI)
+## Browser UI (React 19 + FastAPI)
 
 A full-featured browser dashboard to orchestrate all RAG functions — ingestion, search, comparison, knowledge graph, evaluation, and more.
 
