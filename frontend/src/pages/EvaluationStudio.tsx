@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { runEvaluation, browseChunks, generateQA, type QAPair, type EvalResult, type EvalScore, type RetrievalMethodsReq, type BrowseChunk } from '../api/evaluate'
 import { getCollections, type Collection } from '../api/backends'
 import { useStore } from '../store'
+import { bestMatchCollection, collectionLabel } from '../utils/collectionName'
 import RetrievalTrace from '../components/RetrievalTrace/RetrievalTrace'
 
 // ── Constants ─────────────────────────────────────────────────────────────────

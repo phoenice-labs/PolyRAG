@@ -18,6 +18,10 @@ from api.jobs import JobStore
 _job_store: Optional[JobStore] = None
 _feedback_store: List[Dict[str, Any]] = []
 _eval_store: Dict[str, Any] = {}
+_eval_store_loaded: bool = False   # disk load happens once on first get_eval_store() call
+
+# Evaluation persistence directory (survives server restarts)
+_EVAL_DIR = Path(__file__).resolve().parent.parent / "data" / "evaluations"
 
 # Shared temp directory for FAISS/ChromaDB persistent storage during server life
 _tmp_dir: Optional[str] = None
@@ -155,7 +159,37 @@ def get_feedback_store() -> List[Dict[str, Any]]:
 
 
 def get_eval_store() -> Dict[str, Any]:
+    global _eval_store, _eval_store_loaded
+    if not _eval_store_loaded:
+        _load_eval_store()
+        _eval_store_loaded = True
     return _eval_store
+
+
+def _load_eval_store() -> None:
+    """Load all persisted evaluation results from disk into the in-memory store."""
+    import json
+    if not _EVAL_DIR.exists():
+        return
+    for path in _EVAL_DIR.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if path.stem not in _eval_store:
+                _eval_store[path.stem] = data
+        except Exception:
+            pass  # corrupt file — skip silently
+
+
+def persist_eval(eval_id: str, data: Dict[str, Any]) -> None:
+    """Write one evaluation result to disk. Best-effort — never raises."""
+    import json
+    try:
+        _EVAL_DIR.mkdir(parents=True, exist_ok=True)
+        (_EVAL_DIR / f"{eval_id}.json").write_text(
+            json.dumps(data, default=str), encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 
 def get_tmp_dir() -> str:

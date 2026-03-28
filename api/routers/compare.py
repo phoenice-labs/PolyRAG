@@ -253,6 +253,7 @@ def _run_backend_compare(
         base_kw_hits=sum(r.kw_hits for r in per_query),
         avg_score=round(overall_avg, 4),
         ingest_time_s=round(ingest_time, 2),
+        ingestion_performed=text_to_ingest is not None,
         avg_query_latency_ms=round(avg_latency, 1),
         latency_p50_ms=round(statistics.median(all_p50s) if all_p50s else 0.0, 1),
         latency_p95_ms=round(max(all_p95s) if all_p95s else 0.0, 1),
@@ -306,19 +307,27 @@ async def compare(req: CompareRequest) -> CompareResponse:
     queries = req.queries or _DEFAULT_QUERIES
 
     tasks = [
-        asyncio.to_thread(
-            _run_backend_compare, b, collection, text_to_ingest, queries,
-            req.full_retrieval, req.repeat_runs, req.compare_graph_ab,
+        asyncio.wait_for(
+            asyncio.to_thread(
+                _run_backend_compare, b, collection, text_to_ingest, queries,
+                req.full_retrieval, req.repeat_runs, req.compare_graph_ab,
+            ),
+            timeout=req.timeout,
         )
         for b in req.backends
     ]
-    results = await asyncio.gather(*tasks)
+    results_raw = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_per_query: List[CompareBackendResult] = []
     all_summaries: List[CompareSummary] = []
-    for per_query, summary in results:
-        all_per_query.extend(per_query)
-        all_summaries.append(summary)
+    for b, res in zip(req.backends, results_raw):
+        if isinstance(res, BaseException):
+            # Backend timed-out or raised an unexpected error — surface it cleanly
+            all_summaries.append(CompareSummary(backend=b, errors=1))
+        else:
+            per_query, summary = res
+            all_per_query.extend(per_query)
+            all_summaries.append(summary)
 
     return CompareResponse(per_query=all_per_query, summary=all_summaries)
 

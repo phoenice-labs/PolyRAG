@@ -69,12 +69,13 @@ class IngestRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str
-    backends: List[str] = Field(default_factory=lambda: ["faiss"])
+    query: str = Field(..., max_length=2000)
+    backends: List[str] = Field(default_factory=lambda: ["faiss"], max_length=6)
     collection_name: str = "polyrag_docs"
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=100)
     methods: RetrievalMethods = Field(default_factory=RetrievalMethods)
     embedding_model: EmbeddingModel = "all-MiniLM-L6-v2"
+    filters: Dict[str, Any] = Field(default_factory=dict)  # metadata pre-filter (passed to adapters that support it)
 
 
 class CompareRequest(BaseModel):
@@ -93,6 +94,7 @@ class CompareRequest(BaseModel):
     corpus_limit: Optional[int] = None
     repeat_runs: int = Field(default=1, ge=1, le=10)   # for P50/P95 latency
     compare_graph_ab: bool = False                      # run each query with graph ON vs OFF
+    timeout: int = Field(default=60, ge=10, le=300)    # per-backend timeout in seconds
 
 
 class FeedbackRequest(BaseModel):
@@ -284,6 +286,7 @@ class CompareSummary(BaseModel):
     base_kw_hits: int = 0
     avg_score: float = 0.0
     ingest_time_s: float = 0.0
+    ingestion_performed: bool = False   # False when comparing existing collections (ingest_time_s is 0/irrelevant)
     avg_query_latency_ms: float = 0.0
     latency_p50_ms: float = 0.0
     latency_p95_ms: float = 0.0
@@ -299,3 +302,14 @@ class CompareSummary(BaseModel):
 class CompareResponse(BaseModel):
     per_query: List[CompareBackendResult]
     summary: List[CompareSummary]
+
+
+# ── Evaluate response models ───────────────────────────────────────────────────
+
+class RagasScores(BaseModel):
+    """LLM-judged quality scores from RAGAS (requires LM Studio at localhost:1234)."""
+    faithfulness: Optional[float] = None          # factual grounding in retrieved context
+    answer_relevancy: Optional[float] = None      # how well answer addresses the question
+    context_precision: Optional[float] = None     # fraction of context that is relevant
+    context_recall: Optional[float] = None        # fraction of ground truth covered by context
+    error: Optional[str] = None                   # set when RAGAS scoring failed

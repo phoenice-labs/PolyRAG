@@ -38,6 +38,20 @@ _TRAIL_LOG = Path(__file__).resolve().parent.parent.parent / "data" / "retrieval
 _trail_lock = threading.Lock()
 
 
+def _normalize_confidence(score: float, min_s: float, max_s: float, idx: int, n: int) -> float:
+    """Min-max normalize a retrieval score into a [0, 1] confidence value.
+
+    When all results share the same score (e.g. graph-only direct-match hop=0 → 1.0)
+    the range is zero, so we fall back to a rank-based decay: rank 0 → 1.0, last → 0.0.
+    This fixes the bug where graph results always showed 100 % confidence.
+    """
+    rng = max_s - min_s
+    if rng > 1e-6:
+        return round((score - min_s) / rng, 4)
+    # Flat-score fallback: rank-based linear decay
+    return round(max(0.0, 1.0 - idx / max(n, 1)), 4)
+
+
 def _append_retrieval_trail(record: dict) -> None:
     """Thread-safe append of one retrieval trail record to JSONL log."""
     _TRAIL_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -395,7 +409,9 @@ def _run_search_with_bundle(
         latency_ms = (time.monotonic() - t0) * 1000
 
         from api.schemas import MethodContribution as MC
-        _max_score = max((r.score for r in response.results), default=1.0) or 1.0
+        _res = response.results
+        _max_s = max((r.score for r in _res), default=1.0) or 1.0
+        _min_s = min((r.score for r in _res), default=0.0)
         chunks = [
             SearchResultItem(
                 chunk_id=str(r.document.id),
@@ -403,14 +419,14 @@ def _run_search_with_bundle(
                 score=float(r.score),
                 metadata={k: v for k, v in (r.document.metadata or {}).items() if not k.startswith("_")},
                 provenance=None,
-                confidence=float(r.score / _max_score),
+                confidence=_normalize_confidence(r.score, _min_s, _max_s, idx, len(_res)),
                 method_lineage=[
                     MC(method=c["method"], rank=c["rank"], rrf_contribution=c["rrf_contribution"])
                     for c in r.document.metadata.get("_method_lineage", [])
                 ],
                 post_processors=r.document.metadata.get("_post_processors", []),
             )
-            for r in response.results
+            for idx, r in enumerate(_res)
         ]
 
         llm_traces = [
@@ -485,7 +501,9 @@ def _run_search_with_bundle(
                 )
                 latency_ms = (time.monotonic() - t0) * 1000
                 from api.schemas import MethodContribution as MC
-                _max_score = max((r.score for r in response.results), default=1.0) or 1.0
+                _res = response.results
+                _max_s = max((r.score for r in _res), default=1.0) or 1.0
+                _min_s = min((r.score for r in _res), default=0.0)
                 chunks = [
                     SearchResultItem(
                         chunk_id=str(r.document.id),
@@ -493,14 +511,14 @@ def _run_search_with_bundle(
                         score=float(r.score),
                         metadata={k: v for k, v in (r.document.metadata or {}).items() if not k.startswith("_")},
                         provenance=None,
-                        confidence=float(r.score / _max_score),
+                        confidence=_normalize_confidence(r.score, _min_s, _max_s, idx, len(_res)),
                         method_lineage=[
                             MC(method=c["method"], rank=c["rank"], rrf_contribution=c["rrf_contribution"])
                             for c in r.document.metadata.get("_method_lineage", [])
                         ],
                         post_processors=r.document.metadata.get("_post_processors", []),
                     )
-                    for r in response.results
+                    for idx, r in enumerate(_res)
                 ]
                 llm_traces = [
                     LLMTraceEntry(
@@ -601,6 +619,13 @@ async def search(req: SearchRequest) -> SearchResponse:
             m.model_dump(),
         ))
 
-    backend_results = await asyncio.gather(*tasks)
-    results: Dict[str, BackendSearchResult] = {r.backend: r for r in backend_results}
+    backend_results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+    results: Dict[str, BackendSearchResult] = {}
+    for backend, res in zip(req.backends, backend_results_raw):
+        if isinstance(res, BaseException):
+            # Defensive: _run_search_with_bundle already catches all exceptions internally,
+            # but return_exceptions=True ensures one rogue task never kills all backends.
+            results[backend] = BackendSearchResult(backend=backend, answer="", error=str(res))
+        else:
+            results[backend] = res
     return SearchResponse(query=req.query, results=results)
