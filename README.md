@@ -1,6 +1,6 @@
 # PolyRAG
 
-> **A visual workbench for engineers who take RAG quality seriously.**
+> **Stop guessing. Start knowing exactly why your RAG works — or doesn't.**
 
 [![CI](https://github.com/anand08151947-dot/PolyRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/anand08151947-dot/PolyRAG/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
@@ -9,14 +9,18 @@
 
 ---
 
-PolyRAG is an open-source RAG platform built for ML engineers who need to **experiment, compare, and measure** retrieval strategies — not just run them. It gives you a browser-based workbench where you can:
+Most teams building RAG-powered applications — whether for Agentic AI, enterprise search, or document Q&A — are flying blind. Retrieval is unreliable but there is no visibility into why. Multiple retrieval signals fire on every query but no one knows which ones are actually contributing. There is no ground-truth evaluation, so quality is judged by feel. When something breaks in production, there is no trace to follow.
 
-- Ingest documents and preview exactly how they get chunked before anything is committed
-- Run a query through up to 12 retrieval methods simultaneously and see a step-by-step trace of what fired
-- Compare the same query across all six vector backends side-by-side, scored and sortable
-- Build a ground-truth evaluation dataset and measure faithfulness and relevance across every backend x method combination
+**PolyRAG is the workbench that changes that.**
 
-Everything runs locally. No cloud account required. LLM is optional — retrieval works without one.
+It is an open-source platform for any team that needs RAG to work reliably before they ship it — in an agentic pipeline, a product feature, or a proof of concept. Rather than adding RAG and hoping for the best, PolyRAG gives your team a structured environment to evaluate, compare, and validate retrieval quality with evidence:
+
+- **See inside every query** — a step-by-step retrieval trace shows exactly which of 12 methods fired, what score each contributed before and after fusion, and why a chunk ranked where it did
+- **Compare backends with data** — run the same query across all six vector stores simultaneously and see scored results side-by-side, not synthetic benchmarks
+- **Measure before you ship** — build a ground-truth Q&A dataset and auto-score every backend × retrieval combination for faithfulness, relevance, and source accuracy
+- **Ingest with confidence** — preview exactly how documents get chunked before a single byte is written to any vector store
+
+Everything runs locally. No cloud account required. LLM is optional — retrieval, tracing, and evaluation all work without one.
 
 ---
 
