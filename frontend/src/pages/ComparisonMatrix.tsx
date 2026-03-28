@@ -589,6 +589,14 @@ export default function ComparisonMatrix() {
     [...new Set(Object.values(backendCollections).flat().map(c => c.name))].sort(),
     [backendCollections])
 
+  // Auto-select: if current collectionName isn't in any backend, pick the first known one.
+  useEffect(() => {
+    if (allCollectionNames.length === 0) return
+    if (!allCollectionNames.includes(collectionName) && allCollectionNames[0]) {
+      setCollectionName(allCollectionNames[0])
+    }
+  }, [allCollectionNames]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Queries & options ──
   const [queriesText, setQueriesText]     = useState('')
   const [sampleQueries, setSampleQueries] = useState<string[]>([])
