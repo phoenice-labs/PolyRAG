@@ -3,15 +3,20 @@
 > **Enterprise-grade, trustworthy RAG with a unified orchestration layer
 > that works seamlessly across six vector store backends — zero code changes to switch.**
 
+[![Tests](https://github.com/anand08151947-dot/PolyRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/anand08151947-dot/PolyRAG/actions)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![React](https://img.shields.io/badge/react-19-61DAFB)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 ---
 
 ## What Is This?
 
-Phoenice-PolyRAG is a production-ready Retrieval-Augmented Generation (RAG) framework built entirely on **open-source** tooling. Its core design principle:
+Phoenice-PolyRAG is a production-ready Retrieval-Augmented Generation (RAG) framework with a **full-featured React dashboard**, built entirely on **open-source** tooling. Its core design principle:
 
 > *Write your RAG orchestration once. Run it on any vector store.*
 
-Switch from ChromaDB (local dev) to Weaviate (production cluster) by changing **one line in config.yaml**.
+Switch from ChromaDB (local dev) to Weaviate (production cluster) by changing **one line in config.yaml**. Configure your LLM provider, model, and API key directly from the browser — no code or config file edits needed.
 
 ---
 
@@ -45,7 +50,7 @@ Switch from ChromaDB (local dev) to Weaviate (production cluster) by changing **
 | **10** | Knowledge graph (GraphRAG): entity/relation extraction, 3-way hybrid search (vector+BM25+graph) | 53 ✅ |
 | **11** | RAPTOR hierarchical retrieval, LLM entity extraction, contextual re-ranking, MMR diversity | 53 ✅ |
 
-**Total: 368 tests | 368 passing | 1 skipped (LM Studio auto-skip when offline)**
+**Total: 408 tests | 408 passing | 35 frontend tests passing**
 
 ---
 
@@ -85,26 +90,29 @@ pytest tests/phase2/ -v
 
 ---
 
-## LM Studio Setup (Query Intelligence)
+## LLM Configuration
 
-Phase 5 query rewriting and HyDE expansion require a local LLM via [LM Studio](https://lmstudio.ai/).
+LLM interaction is **fully config-driven** — choose your provider, model, base URL, and API key directly from the **Settings page** in the browser UI. No config file edits required.
 
-1. Download and install LM Studio
-2. Load model: **mistralai/ministral-3b** (or any compatible model)
-3. Start the local server on port **1234** (default)
-4. Configure in `config/config.yaml`:
+### Supported LLM Providers
 
-```yaml
-llm:
-  base_url: http://localhost:1234/v1
-  model: mistralai/ministral-3b
-  api_key: lm-studio   # dummy key required by OpenAI SDK
-  temperature: 0.1
-  max_tokens: 512
-```
+| Provider | API Key Required | Default Base URL |
+|---|:---:|---|
+| **LM Studio** | No | `http://localhost:1234/v1` |
+| **Ollama** | No | `http://localhost:11434/v1` |
+| **OpenAI** | Yes | `https://api.openai.com/v1` |
+| **Groq** | Yes | `https://api.groq.com/openai/v1` |
+| **Azure OpenAI** | Yes | Your deployment URL |
+| **Google Gemini** | Yes | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| **Anthropic** | Yes | `https://api.anthropic.com` |
 
-> **Graceful degradation**: if LM Studio is offline, the pipeline still works — query
-> rewriting is skipped, raw queries are used directly for retrieval.
+### LM Studio Quick Start (free, local, no API key)
+
+1. Download [LM Studio](https://lmstudio.ai/) and load any compatible model (e.g. `mistralai/ministral-3b` or `mistralai/mistral-3b-3.3b`)
+2. Start the local server (default port **1234**)
+3. In the browser UI, go to **Settings → LLM Configuration**, set Provider = **LM Studio**, enter your model name, click **Save**
+
+> **Graceful degradation**: if the configured LLM is offline, the pipeline still works — LLM-powered methods (query rewriting, HyDE, contextual rerank, etc.) are skipped automatically; pure retrieval continues normally.
 
 ---
 
@@ -181,7 +189,7 @@ Phoenice-PolyRAG/
 
 ## Configuration
 
-Edit `config/config.yaml` to switch backends. No code changes needed.
+Edit `config/config.yaml` to switch backends, or use the **Settings page** in the browser UI for LLM configuration.
 
 ```yaml
 store:
@@ -189,7 +197,8 @@ store:
 
 embedding:
   provider: sentence_transformer
-  model: all-MiniLM-L6-v2   # 384-dim, ~80 MB, runs on CPU
+  model: all-MiniLM-L6-v2   # 384-dim, ~80 MB, CPU-only
+  # also supported: BAAI/bge-base-en-v1.5 (768-dim), BAAI/bge-large-en-v1.5 (1024-dim)
 
 ingestion:
   collection_name: polyrag
@@ -197,9 +206,11 @@ ingestion:
   chunk_overlap: 64
 
 llm:
-  base_url: http://localhost:1234/v1   # LM Studio
+  # Managed via Settings UI — changes take effect immediately without restart
+  base_url: http://localhost:1234/v1   # default: LM Studio
   model: mistralai/ministral-3b
-  api_key: lm-studio
+  provider: lm_studio    # lm_studio | openai | ollama | groq | azure_openai | gemini | anthropic
+  api_key: ""            # leave empty for LM Studio / Ollama
   enable_rewrite: true
   enable_hyde: true
   enable_multi_query: false
@@ -289,13 +300,14 @@ response.summary()       # str — one-line summary of result quality
 
 ## Retrieval Methods
 
-All ten retrieval methods work in concert, automatically fused via Reciprocal Rank Fusion (RRF):
+All retrieval methods work in concert, automatically fused via Reciprocal Rank Fusion (RRF):
 
 | Method | Signal | LLM Required | Default |
 |---|---|:---:|:---:|
-| Dense vector search | Semantic similarity | No | ✅ Always on |
+| Dense vector search | Semantic similarity (MiniLM / BGE) | No | ✅ Always on |
 | BM25 keyword search | Exact token overlap | No | ✅ Always on |
-| Knowledge graph traversal | Entity relationships | No (spaCy) | ✅ When graph enabled |
+| SPLADE sparse neural | Learned term expansion (naver/splade-v3) | No | Config opt-in |
+| Knowledge graph traversal | Entity relationships (spaCy + Kuzu) | No | ✅ When graph enabled |
 | Cross-encoder re-ranking | Neural passage score | No | ✅ Always on |
 | MMR diversity selection | Result diversification | No | ✅ Always on |
 | Query rewriting | Clarity improvement | Yes | ✅ When LLM available |
@@ -303,6 +315,7 @@ All ten retrieval methods work in concert, automatically fused via Reciprocal Ra
 | Multi-query ensemble | Paraphrase coverage | Yes | Config opt-in |
 | RAPTOR hierarchical | Cluster summaries | Yes | Config opt-in |
 | Contextual LLM re-ranking | Batched LLM ranking | Yes | Config opt-in |
+| LLM graph extraction | Entity/relation extraction | Yes | Config opt-in |
 
 ---
 
@@ -374,18 +387,18 @@ services:
 
 ## Scalability & Production Readiness
 
-Six hardening fixes shipped across three PRs, all living behind the existing API surface — zero breaking changes.
-
-| Fix | What Changed | Where |
-|-----|-------------|-------|
-| **Async `/api/rag`** | Unified agentic endpoint — full traceability in one call | `api/routers/rag.py` |
+| Feature | What It Does | Where |
+|---------|-------------|-------|
+| **Async `/api/rag`** | Unified agentic endpoint — answer + full traceability in one call | `api/routers/rag.py` |
 | **Rate limiting** | `429 Too Many Requests` at configurable RPS cap | `api/main.py` |
 | **LRU pipeline cache** | Max 10 cached pipelines; LRU eviction calls `pipeline.stop()` | `api/deps.py` |
 | **Streaming chunker** | `stream_chunk_file()` generator — O(chunk_size) RAM regardless of file size | `core/ingestion/loader.py` |
-| **Persistent job store** | `data/jobs.jsonl` write-through; survives API restart | `api/jobs.py` |
-| **ScaleHints on RagProfile** | Per-profile: `embed_batch_size`, `max_doc_size_mb`, `bm25_persist`, `max_concurrent_requests` | `api/routers/rag.py` |
-| **BM25 persistence** | Serialises `bm25_index._docs` to `data/bm25/<md5>.pkl` after warm-up | `api/deps.py` |
+| **Persistent job store** | `data/jobs.jsonl` write-through; survives API restarts | `api/jobs.py` |
+| **BM25 persistence** | Serialises index to `data/bm25/<md5>.pkl` after warm-up | `api/deps.py` |
+| **SPLADE persistence** | Pre-encoded sparse vectors saved to `data/splade/` per collection | `core/retrieval/splade.py` |
 | **System endpoints** | `/api/system/health`, `/api/system/cache` (GET + DELETE) | `api/routers/system.py` |
+| **Config-driven LLM** | Provider, model, URL, API key managed via Settings UI — live reload, no restart | `api/routers/config.py` |
+| **ScaleHints on RagProfile** | Per-profile: `embed_batch_size`, `max_doc_size_mb`, `bm25_persist`, `max_concurrent_requests` | `api/routers/rag.py` |
 
 ### Unified Agentic RAG endpoint
 
@@ -457,9 +470,9 @@ Response includes full traceability:
 
 Pass/fail thresholds (checked at exit): p50 < 2 s, p95 < 5 s, error rate < 1 %.
 
-### RAGAS Evaluation (PR #5 — pending merge)
+### RAGAS Quality Evaluation
 
-When merged, every `/api/evaluate` response will include LLM-judged RAGAS metrics alongside word-overlap scores:
+Every `/api/evaluate` response includes both word-overlap scores and LLM-judged RAGAS metrics:
 
 ```json
 "ragas": {
@@ -470,8 +483,7 @@ When merged, every `/api/evaluate` response will include LLM-judged RAGAS metric
 }
 ```
 
-Check availability before running: `GET /api/evaluate/ragas-status`.
-Requires LM Studio running on port 1234. Gracefully returns `null` when offline.
+Check availability: `GET /api/evaluate/ragas-status`. Requires a configured LLM provider. Gracefully returns `null` when the LLM is offline.
 
 ---
 
@@ -564,11 +576,13 @@ The codebase stores rich per-chunk metadata (`doc_id`, `source`, `section_title`
 | Component | Library |
 |---|---|
 | Data models | [Pydantic v2](https://docs.pydantic.dev/) |
-| Embeddings | [sentence-transformers](https://www.sbert.net/) (all-MiniLM-L6-v2) |
+| Embeddings | [sentence-transformers](https://www.sbert.net/) — MiniLM-L6-v2, BGE-base, BGE-large |
 | Keyword search | [rank-bm25](https://github.com/dorianbrown/rank_bm25) |
-| Hybrid fusion | Reciprocal Rank Fusion (RRF, Cormack et al.) |
+| Sparse neural retrieval | [sentence-transformers SparseEncoder](https://www.sbert.net/) — naver/splade-v3 |
+| Hybrid fusion | Reciprocal Rank Fusion (RRF) — 3-way: Dense + SPLADE + BM25 |
 | Cross-encoder re-ranking | [sentence-transformers](https://www.sbert.net/) (ms-marco-MiniLM) |
-| Local LLM | [LM Studio](https://lmstudio.ai/) + mistralai/ministral-3b via OpenAI SDK |
+| Local LLM | [LM Studio](https://lmstudio.ai/), [Ollama](https://ollama.com/), or any OpenAI-compatible server |
+| Cloud LLM | OpenAI, Groq, Azure OpenAI, Google Gemini, Anthropic (configured in Settings UI) |
 | Local vector DB | [ChromaDB](https://www.trychroma.com/), [FAISS](https://faiss.ai/) |
 | Scalable vector DB | [Qdrant](https://qdrant.tech/), [Weaviate](https://weaviate.io/), [Milvus](https://milvus.io/) |
 | Relational vector | [PGVector](https://github.com/pgvector/pgvector) |
@@ -579,7 +593,7 @@ The codebase stores rich per-chunk metadata (`doc_id`, `source`, `section_title`
 | Test corpus | [Project Gutenberg #100](https://www.gutenberg.org/ebooks/100) |
 | Test framework | [pytest](https://pytest.org/) |
 
-All components are open-source with permissive licences. No OpenAI API key required.
+All components are open-source with permissive licences. No OpenAI API key required — use LM Studio or Ollama for a fully local, free setup.
 
 
 
@@ -609,8 +623,12 @@ FastAPI + uvicorn  (api/ directory)
   ├── GET  /api/backends               → health + ping for all 6 backends
   ├── GET  /api/collections            → collection CRUD
   ├── GET  /api/graph/{coll}           → entity/relation nodes for D3
-  ├── POST /api/evaluate               → ground-truth scoring (faithfulness / relevance / recall)
-  ├── GET  /api/evaluate/ragas-status  → RAGAS availability check (LM Studio)
+  ├── POST /api/evaluate               → ground-truth scoring (faithfulness / relevance / recall + RAGAS)
+  ├── GET  /api/evaluate/ragas-status  → RAGAS availability check
+  ├── GET  /api/config/llm             → get current LLM configuration
+  ├── PUT  /api/config/llm             → update LLM provider/model/key (live reload)
+  ├── GET  /api/config/llm/providers   → list all supported LLM providers
+  ├── GET  /api/config/llm/test        → test connectivity to configured LLM
   ├── POST /api/feedback               → relevance thumbs up/down
   ├── POST /api/chunks/preview         → dry-run chunking (no ingest)
   ├── GET  /api/jobs                   → job history + status
@@ -633,7 +651,7 @@ orchestrator/pipeline.py  (existing — untouched)
 | **📚 Document Library** | Tabbed by backend · Collection CRUD · Document versions · Re-ingest · Delete · Health indicators |
 | **⚖ Evaluation Studio** | Ground-truth Q&A manager · Auto-score per backend × method (faithfulness / relevance / source_hit) · Results matrix |
 | **🗂 Job History** | Persistent job log · Status filter · Log line expansion · Clear completed |
-| **⚙ Settings** | Backend connection strings · LM Studio URL/port · Embedding model |
+| **⚙ Settings** | Backend connection strings · **LLM provider selector (7 providers)** · Model name · API key (hidden for local providers) · Temperature / max tokens · Test connection button · Embedding model selector |
 
 ### 10 Enterprise-Grade Features (built-in from day 1)
 
@@ -650,9 +668,10 @@ orchestrator/pipeline.py  (existing — untouched)
 
 ### Starting the UI
 
-`powershell
+```powershell
 # Terminal 1: Start the API server
 .\start.ps1
+# or directly:
 uvicorn api.main:app --reload --port 8000
 
 # Terminal 2: Start the React frontend
@@ -662,20 +681,20 @@ npm run dev
 
 # Terminal 3 (optional): Start Docker vector DBs
 docker compose -f docker-compose.polyrag.yml up -d
-`
+```
 
 ### Running Tests
 
-`powershell
-# Backend tests (420 tests)
+```powershell
+# Backend tests (408 tests)
 pytest tests/ -q
 
-# API integration tests (17 tests)
+# API integration tests
 pytest tests/phase13/ -q
 
-# Frontend tests (29 tests, Vitest + React Testing Library)
+# Frontend tests (35 tests, Vitest + React Testing Library)
 cd frontend && npm test
-`
+```
 
 ### Technology Stack (Phase 13 additions)
 
