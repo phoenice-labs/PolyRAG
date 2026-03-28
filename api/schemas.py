@@ -135,6 +135,7 @@ class JobStatus(BaseModel):
     log_lines: List[str] = Field(default_factory=list)
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    collection_name: Optional[str] = None
 
 
 class ChunkItem(BaseModel):

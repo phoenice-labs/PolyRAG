@@ -14,6 +14,10 @@ export interface IngestJob {
   log_lines?: string[]
   result?: { upserted: number; total_chunks: number }
   error?: string
+  errors?: string[]
+  collection_name?: string
+  duration?: number
+  chunk_count?: number
 }
 
 export interface IngestRequest {

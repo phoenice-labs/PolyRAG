@@ -23,6 +23,7 @@ def _job_to_schema(job) -> JobStatus:
         log_lines=job.log_lines,
         result=job.result,
         error=job.error,
+        collection_name=job.collection_name,
     )
 
 

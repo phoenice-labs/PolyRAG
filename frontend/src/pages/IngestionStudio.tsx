@@ -4,7 +4,7 @@ import BackendSelector from '../components/BackendSelector/BackendSelector'
 import IngestionFlow from '../components/IngestionFlow/IngestionFlow'
 import LogStream from '../components/LogStream/LogStream'
 import { useStore } from '../store'
-import { ingestText, previewChunks, type ChunkPreview } from '../api/ingest'
+import { ingestText, previewChunks, getJobStatus, type ChunkPreview } from '../api/ingest'
 import { streamIngestLogs } from '../api/client'
 import { deleteCollection } from '../api/backends'
 
@@ -161,7 +161,7 @@ export default function IngestionStudio() {
   const {
     selectedBackends, activeCollection, setActiveCollection,
     ingestConfig, setIngestConfig,
-    setActiveIngestJob,
+    setActiveIngestJob, activeIngestJobs, clearActiveIngestJobs,
   } = useStore()
   const navigate = useNavigate()
 
@@ -219,6 +219,84 @@ export default function IngestionStudio() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [loading])
+
+  // On mount: if Zustand has active job IDs (i.e. user navigated away during an ingest),
+  // reconnect the SSE stream and replay existing log lines from the backend.
+  useEffect(() => {
+    const entries = Object.entries(activeIngestJobs)
+    if (entries.length === 0) return
+
+    let mounted = true
+    const cleanups: Array<() => void> = []
+
+    ;(async () => {
+      const stillRunning: Array<[string, string]> = []
+      const restoredLines: string[] = []
+
+      for (const [backend, jobId] of entries) {
+        try {
+          const job = await getJobStatus(jobId)
+          if (!mounted) return
+          // Replay already-received log lines
+          for (const line of job.log_lines ?? []) {
+            restoredLines.push(`[${backend}] ${line}`)
+          }
+          if (job.status === 'running' || job.status === 'pending') {
+            stillRunning.push([backend, jobId])
+          } else {
+            // Job finished while away — clean up Zustand
+            clearActiveIngestJobs()
+            const remaining = { ...activeIngestJobs }
+            delete remaining[backend]
+            Object.entries(remaining).forEach(([b, id]) => setActiveIngestJob(b, id))
+          }
+        } catch {
+          // Job not found or network error — treat as gone
+        }
+      }
+
+      if (!mounted) return
+
+      if (restoredLines.length > 0) {
+        setLogs(['── Restored log from active job ──', ...restoredLines])
+      }
+
+      if (stillRunning.length === 0) return
+
+      setLoading(true)
+      let doneCount = 0
+
+      for (const [backend, jobId] of stillRunning) {
+        const cancel = streamIngestLogs(
+          jobId,
+          (line) => {
+            if (!mounted) return
+            const prefixed = `[${backend}] ${line}`
+            setLogs((prev) => [...prev, prefixed])
+            const step = detectStep(prefixed)
+            if (step) advanceStep(step)
+          },
+          () => {
+            if (!mounted) return
+            doneCount++
+            setJobResults((prev) => ({ ...prev, [backend]: 'done' }))
+            if (doneCount === stillRunning.length) {
+              markAllComplete()
+              setLoading(false)
+              clearActiveIngestJobs()
+            }
+          },
+        )
+        cleanups.push(cancel)
+      }
+    })()
+
+    return () => {
+      mounted = false
+      cleanups.forEach((c) => c())
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Step order for auto-advancing completed steps
   const STEP_ORDER = ['upload', 'chunk', 'embed', 'graph', 'upsert']
