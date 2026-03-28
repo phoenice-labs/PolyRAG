@@ -443,10 +443,10 @@ function EvaluateGuideModal({ onClose }: { onClose: () => void }) {
               <ol className="space-y-1 list-decimal list-inside text-gray-400">
                 <li>Open the browser — browse or search chunks by keyword.</li>
                 <li>Click a chunk to select and read it in full.</li>
-                <li>Click <span className="text-white">"Generate Q&A"</span> — the LLM (LM Studio) produces a question and expected answer grounded in that chunk's content.</li>
+                <li>Click <span className="text-white">"Generate Q&A"</span> — your configured LLM produces a question and expected answer grounded in that chunk's content.</li>
                 <li>Click <span className="text-white">"Add to Evaluation"</span> — the pair is added to your Q&A list ready to run.</li>
               </ol>
-              <p className="text-yellow-400 mt-2">⚠ Requires LM Studio running locally at localhost:1234. Without it, generation is skipped.</p>
+              <p className="text-yellow-400 mt-2">⚠ Requires a configured LLM provider (set in Settings → LLM Configuration). Without it, generation is skipped.</p>
             </div>
           </section>
 

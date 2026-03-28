@@ -363,7 +363,7 @@ function SearchGuideModal({ onClose }: { onClose: () => void }) {
                   { name: 'MMR Diversity', desc: 'Maximal Marginal Relevance — reduces redundancy by penalising duplicate-content chunks. Use when results feel repetitive.' },
                   { name: 'SPLADE', desc: 'Sparse neural retrieval (naver/splade-cocondenser-selfdistil, ~110 MB, Apache 2.0). Learned term expansion — better than BM25 for domain-specific queries. Requires SPLADE index built at ingest time (toggle "Enable SPLADE Index" in Ingestion Studio).' },
                 ]},
-                { group: 'LLM-Required (needs LM Studio)', color: 'text-amber-400', methods: [
+                { group: 'LLM-Required (needs configured LLM)', color: 'text-amber-400', methods: [
                   { name: 'Query Rewrite', desc: 'LLM rephrases your query before retrieval — fixes typos, expands abbreviations, clarifies ambiguous questions.' },
                   { name: 'Multi-Query', desc: 'LLM generates 3 alternative phrasings of your query and merges results — improves recall for complex questions.' },
                   { name: 'HyDE', desc: 'Hypothetical Document Embeddings — LLM drafts a synthetic answer, then retrieves chunks similar to that answer rather than the question.' },

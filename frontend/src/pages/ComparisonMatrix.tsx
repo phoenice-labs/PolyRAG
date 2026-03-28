@@ -490,7 +490,7 @@ function CompareGuideModal({ onClose }: { onClose: () => void }) {
                 { n: '1', text: 'Choose Data Source — use an existing ingested collection (Existing Collection) or paste raw text (Paste Text) which will be ingested on-the-fly for each backend.' },
                 { n: '2', text: 'Select Backends — tick the backends you want to compare. At least 2 required. Backends not yet set up will return empty results without crashing the others.' },
                 { n: '3', text: 'Enter Queries — type one query per line, or click "Load Sample Queries" for pre-built Shakespeare questions. More queries = more reliable averages.' },
-                { n: '4', text: 'Configure Options — set Repeat Runs > 1 for P95 latency; enable Full Retrieval to include LLM-powered methods (requires LM Studio running locally).' },
+                { n: '4', text: 'Configure Options — set Repeat Runs > 1 for P95 latency; enable Full Retrieval to include LLM-powered methods (requires a configured LLM provider — set in Settings → LLM Configuration).' },
                 { n: '5', text: 'Click Run Comparison — results appear in a sortable table. Click any per-query row to see the actual chunks retrieved by each backend.' },
               ].map(({ n, text }) => (
                 <li key={n} className="flex gap-3">
