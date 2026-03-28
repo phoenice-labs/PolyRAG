@@ -252,6 +252,14 @@ graph:
   llm_extraction:
     enabled: false        # true = LLM extracts entities per chunk (higher quality, slower)
 
+retrieval:
+  splade:
+    enabled: false                            # opt-in: sparse neural retrieval (naver/splade-cocondenser-selfdistil, ~110 MB)
+    model: naver/splade-cocondenser-selfdistil  # Apache 2.0; downloaded on first use
+    persist_dir: ./data/splade               # pre-encoded sparse vectors per collection
+    splade_weight: 1.0                       # RRF weight for the SPLADE signal
+    bm25_weight_with_splade: 0.8             # BM25 RRF weight adjusts down when SPLADE is active
+
 advanced_retrieval:
   raptor:
     enabled: false        # true = hierarchical cluster summaries (requires LLM + explicit build call)
@@ -289,7 +297,10 @@ pipeline.ingest_gutenberg()
 # (only needed if advanced_retrieval.raptor.enabled: true in config)
 pipeline.build_raptor_index()
 
-# Simple query — uses 3-way hybrid search (vector + BM25 + knowledge graph)
+# Simple query — uses 3-way hybrid search (Dense vector + BM25 + knowledge graph)
+# Enable retrieval.splade.enabled: true in config.yaml to upgrade to 4-way hybrid:
+#   Dense  +  SPLADE sparse neural  +  BM25 keyword  +  Knowledge graph
+# All signals are fused via Reciprocal Rank Fusion (RRF) automatically.
 results = pipeline.query("What does the policy say about data retention?", top_k=5)
 for r in results:
     print(f"[{r.score:.3f}] {r.document.text[:120]}")
@@ -328,7 +339,7 @@ response.summary()       # str — one-line summary of result quality
 
 ## Retrieval Methods
 
-All retrieval methods work in concert, automatically fused via Reciprocal Rank Fusion (RRF):
+All retrieval signals are fused via Reciprocal Rank Fusion (RRF). By default this is a **3-way fusion** (Dense + BM25 + Knowledge Graph). Enabling SPLADE upgrades it to **4-way hybrid** — the highest-recall configuration:
 
 | Method | Signal | LLM Required | Default |
 |---|---|:---:|:---:|
@@ -446,7 +457,7 @@ Response includes full traceability:
         "source": "my_doc.pdf",
         "chunk_strategy": "sentence_boundary",
         "classification": "INTERNAL",
-        "_method_lineage": ["Dense Vector", "BM25 Keyword", "Knowledge Graph"]
+        "_method_lineage": ["Dense Vector", "SPLADE Sparse", "BM25 Keyword", "Knowledge Graph"]
       }
     }
   ],
