@@ -100,3 +100,9 @@ docker-volumes/
 
 # ── Service runtime files ─────────────────────────────────────────────────────
 .service-pids.json
+
+# ── Local utility / scratch scripts ──────────────────────────────────────────
+_write_readme.py
+audit_model.py
+verify_gaps.py
+verify_model.py
