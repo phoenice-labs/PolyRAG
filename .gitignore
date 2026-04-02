@@ -48,10 +48,17 @@ data/*.png
 data/*.xml
 data/*.csv
 
-# Rich-format ingestion test files (PDF / PowerPoint — user-supplied, not source assets)
+# Rich-format ingestion files (PDF / PowerPoint — user-supplied, not source assets)
+# Recursive patterns cover data/uploads/, data/ingested/, and any other subdirectory.
+data/**/*.pdf
+data/**/*.pptx
+data/**/*.ppt
 data/*.pdf
 data/*.pptx
 data/*.ppt
+
+# Uploaded document staging area
+uploads/
 
 # Keep the .gitkeep marker so the directory structure is preserved
 !data/.gitkeep
@@ -111,3 +118,19 @@ _write_readme.py
 audit_model.py
 verify_gaps.py
 verify_model.py
+
+# ── Local planning / notes docs (not part of the shipped product) ─────────────
+# Specific known files
+BACKLOG.md
+TODO.md
+COMPETITIVE_ASSESSMENT.md
+BUG_REPORT.txt
+# General patterns for any future planning artefacts at repo root
+NOTES*.md
+SCRATCH*.md
+PLANNING*.md
+ROADMAP*.md
+DESIGN*.md
+SPIKE*.md
+*_REPORT.txt
+*_REPORT.md

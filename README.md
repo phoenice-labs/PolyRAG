@@ -160,6 +160,7 @@ RAGAS scores (faithfulness, answer_relevancy, context_precision, context_recall)
 
 Ingestion Studio manages the full document ingestion pipeline with real-time feedback.
 
+- **Supported formats** — PDF (`.pdf`), PowerPoint (`.pptx`), and plain-text formats (`.txt`, `.md`, `.rst`, `.csv`, `.json`, `.xml`, `.html`). Legacy `.ppt` files must be saved as `.pptx` before ingesting. Scanned/image-only PDFs are not supported (no OCR).
 - **Drag-and-drop batch queue** — upload multiple files at once with per-file progress tracking
 - **Chunking strategy selector** — choose from fixed-overlap, sentence-boundary, section-aware, or semantic-boundary per batch
 - **Chunk Preview** — dry-run any document through the selected strategy and inspect the output (color-coded boundaries, parent-child hierarchy, detected entity spans) before writing anything to a vector store
@@ -278,7 +279,7 @@ The FastAPI server runs on port 8000. All browser dashboard features are built o
 | `GET/POST/PUT/DELETE /api/rag/profiles` | Named config profiles — save and replay retrieval configurations |
 | `POST /api/search` | Multi-backend query with full retrieval trace |
 | `POST /api/compare` | Cross-backend comparison matrix |
-| `POST /api/ingest` | Start a batch ingestion job |
+| `POST /api/ingest` | Start a batch ingestion job — accepts PDF (`.pdf`), PowerPoint (`.pptx`), and plain-text files |
 | `GET /api/ingest/{id}/stream` | SSE stream of live chunking and embedding events |
 | `POST /api/chunks/preview` | Dry-run chunking without ingesting |
 | `POST /api/evaluate` | Score a ground-truth dataset (faithfulness / relevance / RAGAS) |
@@ -365,6 +366,7 @@ ingestion:
   collection_name: polyrag
   chunk_size: 512
   chunk_overlap: 64
+  enable_rich_formats: true    # false to restrict ingestion to plain-text files only; requires pypdf + python-pptx
 
 llm:
   provider: lm_studio         # lm_studio | openai | ollama | groq | azure_openai | gemini | anthropic
@@ -503,6 +505,8 @@ cd frontend && npm test
 | Load testing | [Locust](https://locust.io/) |
 | Frontend testing | [Vitest](https://vitest.dev/) + [React Testing Library](https://testing-library.com/) |
 | Live streaming | Server-Sent Events via [sse-starlette](https://github.com/sysid/sse-starlette) |
+| PDF parsing | [pypdf](https://github.com/py-pdf/pypdf) — text extraction from PDF documents |
+| PowerPoint parsing | [python-pptx](https://python-pptx.readthedocs.io/) — slide text and speaker-notes extraction from `.pptx` files |
 
 All components are open-source with permissive licences. A fully local, API-key-free setup is possible using LM Studio or Ollama for the LLM layer.
 
