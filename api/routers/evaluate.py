@@ -111,6 +111,30 @@ def _ragas_scores_for(
         return {"ragas": None, "ragas_error": str(exc)}
 
 
+def _ir_scores_for(
+    chunks: list,
+    expected_sources: list,
+    k: int = 5,
+) -> dict:
+    """
+    Compute IR retrieval metrics (MRR, P@k, R@k, NDCG@k) for a single
+    question result.  Returns a plain dict ready for JSON serialization.
+    These metrics run without an LLM.
+    """
+    from core.evaluation.ir_metrics import get_ir_scorer
+    scorer = get_ir_scorer()
+    result = scorer.score(
+        chunks=[
+            {"text": c.text if hasattr(c, "text") else c.get("text", ""),
+             "metadata": c.metadata if hasattr(c, "metadata") else c.get("metadata", {})}
+            for c in chunks
+        ],
+        expected_sources=expected_sources,
+        k=k,
+    )
+    return result.as_dict()
+
+
 def _run_evaluate(
     question: str,
     expected_answer: str,
@@ -224,6 +248,7 @@ def _run_evaluate(
                 "graph_entities": list(resp.graph_entities or []),
                 "graph_paths": [str(p) for p in (resp.graph_paths or [])],
                 "method_contributions": method_contributions,
+                "ir_metrics": _ir_scores_for(resp.results or [], expected_sources),
             }
         except Exception as exc:
             per_backend[backend] = {"error": str(exc), "scores": {}}

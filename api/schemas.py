@@ -16,6 +16,8 @@ class LLMTraceEntry(BaseModel):
     user_message: str        # user/context message sent to LLM
     response: str            # raw LLM response text
     latency_ms: float        # round-trip latency in milliseconds
+    prompt_tokens: Optional[int] = None      # tokens in the LLM prompt
+    completion_tokens: Optional[int] = None  # tokens in the LLM completion
 
 
 # ── Retrieval method flags ─────────────────────────────────────────────────────

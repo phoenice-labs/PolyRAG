@@ -52,6 +52,8 @@ class LLMTraceEntry:
     user_message: str    # user/context message sent to LLM
     response: str        # raw LLM response text
     latency_ms: float    # round-trip latency in milliseconds
+    prompt_tokens: Optional[int] = None      # tokens in the LLM prompt
+    completion_tokens: Optional[int] = None  # tokens in the LLM completion
 
 
 # ── Provider-specific dummy API keys (used when api_key is not configured) ────
@@ -153,12 +155,15 @@ class LMStudioClient:
 
         if trace_method:
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            usage = getattr(response, "usage", None)
             entry = LLMTraceEntry(
                 method=trace_method,
                 system_prompt=system,
                 user_message=prompt,
                 response=result,
                 latency_ms=latency_ms,
+                prompt_tokens=getattr(usage, "prompt_tokens", None),
+                completion_tokens=getattr(usage, "completion_tokens", None),
             )
             self._traces.append(entry)
             _append_trace_to_log(entry, ts)   # ← persist to disk immediately
