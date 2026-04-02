@@ -345,6 +345,19 @@ export default function IngestionStudio() {
     if (file) readFile(file)
   }
   const readFile = (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    const binaryFormats = ['pdf', 'pptx', 'ppt']
+
+    if (binaryFormats.includes(ext)) {
+      // Binary formats (PDF, PPTX) cannot be read as text in the browser.
+      // Pre-fill the Server Path field and switch to server mode so the
+      // backend can extract the text from the file on disk.
+      const suggestedPath = `data/${file.name}`
+      setServerPath(suggestedPath)
+      setSourceMode('server')
+      return
+    }
+
     const reader = new FileReader()
     reader.onload = (ev) => {
       handleSetText(ev.target?.result as string ?? '')
@@ -509,7 +522,7 @@ export default function IngestionStudio() {
                 dragging ? 'border-brand-500 bg-brand-500/10' : 'border-gray-600 bg-gray-800 hover:border-gray-500'
               }`}
             >
-              <input ref={fileInputRef} type="file" accept=".txt,.md,.pdf,.csv" className="hidden" onChange={handleFileChange} />
+              <input ref={fileInputRef} type="file" accept=".txt,.md,.pdf,.pptx,.csv" className="hidden" onChange={handleFileChange} />
               {text ? (
                 <div className="text-center px-3">
                   <p className="text-green-400 text-xs font-medium mb-1">✓ File loaded</p>
@@ -520,7 +533,7 @@ export default function IngestionStudio() {
                 <div className="text-center px-3">
                   <p className="text-gray-400 text-sm mb-1">Drop a file here</p>
                   <p className="text-gray-500 text-xs">or click to browse</p>
-                  <p className="text-gray-600 text-xs mt-2">.txt .md .pdf .csv</p>
+                  <p className="text-gray-600 text-xs mt-2">.txt .md .pdf .pptx .csv</p>
                 </div>
               )}
             </div>
@@ -540,7 +553,7 @@ export default function IngestionStudio() {
                 Path relative to project root. The API will read the file server-side.
               </p>
               <div className="space-y-1">
-                {['data/shakespeare.txt', 'data/shakespeare_hamlet.txt'].map((p) => (
+                {['data/shakespeare.txt', 'data/shakespeare_hamlet.txt', 'data/report.pdf', 'data/slides.pptx'].map((p) => (
                   <button
                     key={p}
                     onClick={() => setServerPath(p)}

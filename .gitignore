@@ -48,6 +48,11 @@ data/*.png
 data/*.xml
 data/*.csv
 
+# Rich-format ingestion test files (PDF / PowerPoint — user-supplied, not source assets)
+data/*.pdf
+data/*.pptx
+data/*.ppt
+
 # Keep the .gitkeep marker so the directory structure is preserved
 !data/.gitkeep
 

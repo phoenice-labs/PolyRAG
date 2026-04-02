@@ -108,10 +108,13 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks) -> Dict:
     text = req.text
     if not text and req.corpus_path:
         try:
-            with open(req.corpus_path, "r", encoding="utf-8") as f:
-                text = f.read()
-        except OSError as exc:
+            from core.ingestion.loader import load_document
+            enable_rich = True  # honoured per config; extractor raises clearly if lib missing
+            text = load_document(req.corpus_path, enable_rich_formats=enable_rich)
+        except (OSError, FileNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=f"Cannot read corpus_path: {exc}")
+        except (ImportError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     store = get_job_store()
 

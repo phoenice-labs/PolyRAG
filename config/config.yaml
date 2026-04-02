@@ -54,6 +54,12 @@ ingestion:
   chunk_overlap: 64      # overlap between consecutive child chunks
   embed_batch_size: 32   # documents per embedding batch
 
+  # ── Rich-format ingestion (PDF / PowerPoint) ──────────────────────────────
+  # Set to false to restrict ingestion to plain-text files only.
+  # Requires: pypdf>=4.0 (PDF) and python-pptx>=1.0 (PPTX) — see requirements.txt
+  # If a required library is missing the API returns HTTP 422 with install instructions.
+  enable_rich_formats: true
+
 
 retrieval:
   reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2

@@ -1,0 +1,84 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ── Tests / CI ────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+playwright-report/
+test-results/
+*.junit.xml
+junit.xml
+tests/load/
+
+# ── Data directory — regenerable at runtime ──────────────────────────────────
+data/chromadb/
+data/faiss/
+data/splade/
+data/bm25/
+data/graph.kuzu/
+data/graphs/
+data/**/*.pkl
+data/**/*.index
+data/**/*.bin
+data/*.jsonl
+data/*.txt
+data/*.pdf
+data/*.pptx
+data/*.ppt
+data/*.png
+data/*.xml
+data/*.csv
+data/profiles/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Frontend build artifacts ─────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── Model / HuggingFace cache ─────────────────────────────────────────────────
+.cache/
+
+# ── Secrets / environment ─────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+secrets.yaml
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Type-checking caches ──────────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+
+# ── Local utility scripts ─────────────────────────────────────────────────────
+_write_readme.py
+audit_model.py
+verify_gaps.py
+verify_model.py
+
+# ── Docker runtime state ──────────────────────────────────────────────────────
+docker-volumes/
+.service-pids.json

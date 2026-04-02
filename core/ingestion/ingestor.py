@@ -103,11 +103,22 @@ class Ingestor:
         path: str,
         metadata: Optional[Dict] = None,
         collection: Optional[str] = None,
+        enable_rich_formats: bool = True,
     ) -> IngestionResult:
-        """Load a text file and ingest its contents."""
-        from core.ingestion.loader import load_text_file
+        """
+        Load a document (plain text, PDF, or PPTX) and ingest its contents.
 
-        text = load_text_file(path)
+        Parameters
+        ----------
+        path               : Path to the document.
+        metadata           : Key/value pairs attached to every chunk.
+        collection         : Override default collection name.
+        enable_rich_formats: Pass ``False`` to restrict ingestion to plain-text
+                             files only (honours the config toggle).
+        """
+        from core.ingestion.loader import load_document
+
+        text = load_document(path, enable_rich_formats=enable_rich_formats)
         base_meta = {"source_file": str(path), **(metadata or {})}
         return self.ingest_text(text, metadata=base_meta, collection=collection)
 

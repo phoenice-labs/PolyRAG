@@ -1,4 +1,9 @@
 # ── Core ──────────────────────────────────────────────────────────────────────
+# ── Rich document ingestion (PDF / PowerPoint) ────────────────────────────────
+# Required for core/ingestion/extractors.py — toggle via ingestion.enable_rich_formats
+pypdf>=4.0              # PDF text extraction (pure Python, BSD licence)
+python-pptx>=1.0        # PowerPoint .pptx extraction (pure Python, MIT licence)
+
 pydantic>=2.5,<3.0
 pyyaml>=6.0
 python-dotenv>=1.0

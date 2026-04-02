@@ -1,6 +1,14 @@
 """
 Document loaders — load raw text from local files or remote URLs.
 Includes a helper to download and cache Project Gutenberg texts.
+
+New in this version
+-------------------
+``load_document()`` is the recommended entry-point for all file-based
+ingestion.  It auto-detects the file format (plain text, PDF, PPTX) and
+delegates to the appropriate extractor in ``core.ingestion.extractors``.
+
+``load_text_file()`` is kept **unchanged** for backward compatibility.
 """
 from __future__ import annotations
 
@@ -21,6 +29,31 @@ _DATA_DIR = Path(__file__).parent.parent.parent / "data"
 def load_text_file(path: str | Path, encoding: str = "utf-8") -> str:
     """Read a local text file and return its contents."""
     return Path(path).read_text(encoding=encoding, errors="replace")
+
+
+def load_document(path: str | Path, enable_rich_formats: bool = True) -> str:
+    """
+    Load any supported document format and return its plain-text content.
+
+    Supported formats
+    -----------------
+    - Plain text / Markdown / CSV / JSON / HTML  (always available)
+    - PDF                                         (requires ``pypdf>=4.0``)
+    - PowerPoint .pptx                            (requires ``python-pptx>=1.0``)
+
+    Parameters
+    ----------
+    path               : Path to the document.
+    enable_rich_formats: When ``False``, only plain-text files are accepted.
+                         Set ``ingestion.enable_rich_formats: false`` in
+                         config.yaml to toggle this at deployment time.
+
+    Returns
+    -------
+    Plain-text string ready for chunking.
+    """
+    from core.ingestion.extractors import extract_text
+    return extract_text(Path(path), enable_rich_formats=enable_rich_formats)
 
 
 def load_from_url(url: str, timeout: int = 60) -> str:
