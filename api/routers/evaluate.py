@@ -14,7 +14,14 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Body, HTTPException, Response
 
 from api.deps import build_pipeline_config, create_pipeline, get_eval_store, persist_eval
-from api.schemas import EvaluateRequest, RetrievalMethods
+from api.schemas import (
+    DatasetCreateRequest,
+    DatasetMetaResponse,
+    DatasetRunRequest,
+    EvaluateQuestionItem,
+    EvaluateRequest,
+    RetrievalMethods,
+)
 
 router = APIRouter(tags=["evaluate"])
 
@@ -530,7 +537,143 @@ async def import_qa(body: Dict = Body(...)) -> Dict:
     return {"imported_count": len(items), "items": items, "errors": errors}
 
 
-@router.get("/evaluate/{eval_id}")
+# ── Dataset Registry endpoints ─────────────────────────────────────────────────
+# Placed BEFORE the parameterized /{eval_id} route so these static paths
+# take precedence in FastAPI's route resolution order.
+
+@router.post("/evaluate/datasets", status_code=201)
+async def create_dataset(req: DatasetCreateRequest) -> Dict:
+    """
+    Save (or update) a named evaluation dataset.
+
+    If a dataset with ``name`` already exists its version is incremented and
+    all items are replaced with the new list.  ``description`` is preserved
+    from the previous version when the request sends an empty string.
+
+    Returns the saved dataset metadata.
+    """
+    from core.evaluation.dataset_registry import EvalDatasetItem, get_dataset_registry
+
+    registry = get_dataset_registry()
+    items = [
+        EvalDatasetItem(
+            question=it.question,
+            expected_answer=it.expected_answer,
+            expected_sources=it.expected_sources,
+        )
+        for it in req.items
+    ]
+    try:
+        meta = registry.save(req.name, items, description=req.description)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return DatasetMetaResponse(
+        name=meta.name,
+        version=meta.version,
+        description=meta.description,
+        created_at=meta.created_at,
+        updated_at=meta.updated_at,
+        item_count=meta.item_count,
+    ).model_dump()
+
+
+@router.get("/evaluate/datasets")
+async def list_datasets_endpoint() -> Dict:
+    """Return metadata for all stored evaluation datasets."""
+    from core.evaluation.dataset_registry import get_dataset_registry
+    registry = get_dataset_registry()
+    datasets = registry.list_datasets()
+    return {
+        "datasets": [
+            {
+                "name": m.name,
+                "version": m.version,
+                "description": m.description,
+                "created_at": m.created_at,
+                "updated_at": m.updated_at,
+                "item_count": m.item_count,
+            }
+            for m in datasets
+        ],
+        "total": len(datasets),
+    }
+
+
+@router.get("/evaluate/datasets/{name}")
+async def get_dataset_endpoint(name: str) -> Dict:
+    """Return full contents of a named evaluation dataset."""
+    from core.evaluation.dataset_registry import get_dataset_registry
+    registry = get_dataset_registry()
+    try:
+        dataset = registry.load(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+    return {
+        "meta": dataset.meta.as_dict(),
+        "items": [it.as_dict() for it in dataset.items],
+    }
+
+
+@router.delete("/evaluate/datasets/{name}")
+async def delete_dataset_endpoint(name: str) -> Dict:
+    """Delete a named evaluation dataset. Returns 404 if not found."""
+    from core.evaluation.dataset_registry import get_dataset_registry
+    registry = get_dataset_registry()
+    deleted = registry.delete(name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+    return {"deleted": True, "name": name}
+
+
+@router.post("/evaluate/datasets/{name}/run")
+async def run_dataset_eval(name: str, req: Dict = Body(default={})) -> Dict:
+    """
+    Run a full evaluation against a stored dataset.
+
+    Equivalent to ``POST /api/evaluate`` with the dataset's questions, but
+    driven by name instead of inline payload.  Stores and returns results
+    using the same eval_id mechanism as the standard evaluate endpoint.
+
+    Request body (all optional)::
+
+        {
+          "backends": ["faiss", "chromadb"],
+          "collection_name": "polyrag_docs",
+          "methods": { ... }
+        }
+    """
+    from core.evaluation.dataset_registry import get_dataset_registry
+
+    registry = get_dataset_registry()
+    try:
+        dataset = registry.load(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    if not dataset.items:
+        raise HTTPException(status_code=422, detail=f"Dataset '{name}' has no items")
+
+    run_req = DatasetRunRequest(**req)
+
+    eval_req = EvaluateRequest(
+        questions=[
+            EvaluateQuestionItem(
+                question=it.question,
+                expected_answer=it.expected_answer,
+                expected_sources=it.expected_sources,
+            )
+            for it in dataset.items
+        ],
+        backends=run_req.backends,
+        collection_name=run_req.collection_name,
+        methods=run_req.methods,
+    )
+
+    result = await start_evaluate(eval_req)
+    result["dataset_name"] = name
+    result["dataset_version"] = dataset.meta.version
+    return result
 async def get_evaluate(eval_id: str) -> Dict:
     """Return full evaluation results."""
     store = get_eval_store()

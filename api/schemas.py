@@ -315,3 +315,46 @@ class RagasScores(BaseModel):
     context_precision: Optional[float] = None     # fraction of context that is relevant
     context_recall: Optional[float] = None        # fraction of ground truth covered by context
     error: Optional[str] = None                   # set when RAGAS scoring failed
+
+
+# ── Dataset Registry models ────────────────────────────────────────────────────
+
+class DatasetItem(BaseModel):
+    """One Q&A item in a stored evaluation dataset."""
+    question: str
+    expected_answer: str
+    expected_sources: List[str] = Field(default_factory=list)
+
+
+class DatasetCreateRequest(BaseModel):
+    """Request body for POST /api/evaluate/datasets."""
+    name: str = Field(
+        ...,
+        pattern=r"^[a-z0-9][a-z0-9\-_]{0,63}$",
+        description="Dataset identifier: 1–64 lowercase chars, digits, hyphens, underscores.",
+    )
+    description: str = ""
+    items: List[DatasetItem] = Field(..., min_length=1)
+
+
+class DatasetMetaResponse(BaseModel):
+    """Metadata returned by dataset create / list endpoints."""
+    name: str
+    version: int
+    description: str
+    created_at: str
+    updated_at: str
+    item_count: int
+
+
+class DatasetGetResponse(BaseModel):
+    """Full dataset payload returned by GET /api/evaluate/datasets/{name}."""
+    meta: DatasetMetaResponse
+    items: List[DatasetItem]
+
+
+class DatasetRunRequest(BaseModel):
+    """Request body for POST /api/evaluate/datasets/{name}/run."""
+    backends: List[str] = Field(default_factory=lambda: ["faiss"])
+    collection_name: str = "polyrag_docs"
+    methods: RetrievalMethods = Field(default_factory=RetrievalMethods)
