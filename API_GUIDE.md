@@ -169,6 +169,17 @@ print(answer["pipeline_audit"]["latency_ms"])              # 142.5
 | `PUT` | `/api/rag/profiles/{id}` | Update a profile (id + created_at preserved) |
 | `DELETE` | `/api/rag/profiles/{id}` | Delete a profile |
 
+### ScaleHints (`scale_hints`)
+
+`scale_hints` are operational tuning parameters embedded in a profile. They do **not** affect retrieval quality — only resource usage and throughput.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `embed_batch_size` | `int` | `32` | Chunks per embedding batch (range: 1–512). Increase for GPU throughput; decrease for memory-constrained CPU. |
+| `max_doc_size_mb` | `float` | `200.0` | Streaming threshold (MB). Files larger than this are chunked via the streaming ingestion path. |
+| `bm25_persist` | `bool` | `true` | Persist BM25 index to disk (`data/bm25/`) between restarts. Set `false` to rebuild from scratch each time. |
+| `max_concurrent_requests` | `int` | `5` | Pipeline concurrency cap (range: 1–100). Controls how many simultaneous RAG requests a single pipeline instance handles. |
+
 ### Confidence Verdict Logic
 
 The `verdict` field uses profile-configurable thresholds:
@@ -181,6 +192,19 @@ The `verdict` field uses profile-configurable thresholds:
 | `INSUFFICIENT` | Not enough relevant content found | score < 0.3 |
 
 Override per profile: `"confidence_thresholds": { "high": 0.85, "medium": 0.6, "low": 0.35 }`
+
+---
+
+## Rate Limits
+
+> | Endpoint | Limit |
+> |---|---|
+> | `POST /api/rag` | 60 req/min |
+> | `POST /api/search` | 30 req/min |
+> | `POST /api/ingest` | 10 req/min |
+> | All others | 120 req/min |
+>
+> HTTP 429 is returned when exceeded. A `Retry-After` header indicates when to retry.
 
 ---
 
@@ -204,7 +228,14 @@ Override per profile: `"confidence_thresholds": { "high": 0.85, "medium": 0.6, "
 11. [Compare Backends](#11-compare-backends)
 12. [Agentic Integration Patterns](#12-agentic-integration-patterns)
 13. [Method Combination Recipes](#13-method-combination-recipes)
-14. [API Reference Summary](#14-api-reference-summary)
+14. [Chunks (Dry-run Preview)](#14-chunks-dry-run-preview)
+15. [LLM Configuration API](#15-llm-configuration-api)
+16. [Prompt Management](#16-prompt-management)
+17. [Purge](#17-purge)
+18. [System / Operations](#18-system--operations)
+19. [Jobs](#19-jobs)
+20. [Feedback](#20-feedback)
+21. [API Reference Summary](#20-api-reference-summary)
 
 ---
 
@@ -276,6 +307,7 @@ Ingestion runs as a background job. One job is created per backend.
 | `overlap` | `int` | `50` | Overlap characters between adjacent chunks. |
 | `enable_er` | `bool` | `true` | Extract named entities + relations into the knowledge graph during ingest. |
 | `embedding_model` | `string` | `"all-MiniLM-L6-v2"` | Encoder used to embed chunks. **Must match the encoder used at query time.** |
+| `enable_splade` | `bool` | `false` | Build a SPLADE sparse-neural index during ingest. Required before using `enable_splade` at search time. |
 
 #### Chunk Strategy Guide
 
@@ -321,6 +353,35 @@ with httpx.stream("GET", f"http://localhost:8000/api/ingest/{job_id}/stream") as
         if line.startswith("data:"):
             print(line[5:])
 ```
+
+### Supported File Formats for `corpus_path`
+
+In addition to plain-text files, `corpus_path` now accepts **PDF (`.pdf`) and PowerPoint (`.pptx`)** files directly.
+
+| Format | Notes |
+|--------|-------|
+| `.txt`, `.md` | Plain text — always supported |
+| `.pdf` | Text-layer PDFs supported. Scanned/image-only PDFs are **not** supported (no OCR). Requires `pypdf>=4.0` (included in `requirements.txt`). |
+| `.pptx` | Slide text and notes extracted. Legacy `.ppt` files must be converted to `.pptx` first. Requires `python-pptx>=1.0` (included in `requirements.txt`). |
+
+Controlled by the `enable_rich_formats` config flag in `config/config.yaml` (default: `true`).
+
+### GET `/api/ingest/jobs`
+
+Returns a list of all ingestion jobs across all backends, sorted newest-first.
+
+```bash
+curl http://localhost:8000/api/ingest/jobs
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Job identifier |
+| `status` | `string` | `pending` \| `running` \| `done` \| `error` |
+| `backend` | `string` | Target vector backend |
+| `collection_name` | `string` | Target collection |
+| `created_at` | `string` | ISO 8601 creation timestamp |
+| `updated_at` | `string` | ISO 8601 last-update timestamp |
 
 ---
 
@@ -674,6 +735,35 @@ Clear the audit log:
 curl -X DELETE http://localhost:8000/api/retrieval-trails
 ```
 
+### GET `/api/retrieval-trails/analysis`
+
+Analyse all recorded trails and return per-method contribution statistics.
+
+```bash
+curl "http://localhost:8000/api/retrieval-trails/analysis?backend=faiss&min_trails=1"
+```
+
+| Query Param | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `backend` | `string` | — | Filter to a specific backend (optional) |
+| `min_trails` | `int` | `1` | Minimum trail count threshold |
+
+```json
+{
+  "total_trails_analysed": 42,
+  "per_method": {
+    "Dense Vector": {
+      "avg_contribution_pct": 38.2,
+      "total_chunks_contributed": 120,
+      "appears_in_n_trails": 42
+    }
+  },
+  "recommended": ["Dense Vector", "BM25 Keyword", "Cross-Encoder Rerank"],
+  "never_contributed": ["SPLADE"],
+  "interpretation": "Based on your query history, these 3 methods account for 85% of all retrieved chunks."
+}
+```
+
 ---
 
 ## 6. LLM Trace History
@@ -764,6 +854,79 @@ Run LLM-enhanced entity extraction (background job, returns `job_id`):
 curl -X POST http://localhost:8000/api/graph/polyrag_docs_minilm/enhance
 ```
 
+### GET `/api/graph`
+
+List collection names that have a persisted graph snapshot.
+
+```bash
+curl http://localhost:8000/api/graph
+# → ["polyrag_docs_minilm", "product_docs_bge-base"]
+```
+
+### GET `/api/graph/{collection}/enhance-status`
+
+Check the LLM enhancement status for a collection's graph.
+
+```bash
+curl http://localhost:8000/api/graph/polyrag_docs_minilm/enhance-status
+```
+
+```json
+{
+  "collection": "polyrag_docs_minilm",
+  "graph_exists": true,
+  "node_count": 142,
+  "edge_count": 381,
+  "llm_enhanced": true,
+  "llm_enhanced_at": "2026-03-20T12:00:00.000Z"
+}
+```
+
+### GET `/api/graph/{collection}/enhance/{job_id}/stream`
+
+SSE stream for the LLM graph enhancement background job. Same format as the ingest stream: `data:` lines for log output, `STATUS:done` or `STATUS:error` events, and `# keepalive` comments every 10 seconds.
+
+```python
+with httpx.stream("GET", f"http://localhost:8000/api/graph/{collection}/enhance/{job_id}/stream") as r:
+    for line in r.iter_lines():
+        if line.startswith("data:"):
+            print(line[5:])
+```
+
+### DELETE `/api/graph/{collection}`
+
+> ⚠️ Destructive — deletes the graph snapshot JSON and clears the Kuzu embedded graph DB for this collection.
+
+```bash
+curl -X DELETE http://localhost:8000/api/graph/polyrag_docs_minilm
+```
+
+```json
+{
+  "deleted": true,
+  "collection": "polyrag_docs_minilm",
+  "kuzu_cleared": true,
+  "pipelines_evicted": 1
+}
+```
+
+### DELETE `/api/graph`
+
+> ⚠️ Destructive — deletes **all** graph snapshots and clears the entire Kuzu embedded graph DB.
+
+```bash
+curl -X DELETE http://localhost:8000/api/graph
+```
+
+```json
+{
+  "deleted": ["polyrag_docs_minilm", "product_docs_bge-base"],
+  "count": 2,
+  "kuzu_cleared": true,
+  "pipelines_evicted": 3
+}
+```
+
 ---
 
 ## 8. Backend Health & Discovery
@@ -804,6 +967,45 @@ curl http://localhost:8000/api/backends
 ```bash
 curl http://localhost:8000/api/health
 # → {"status": "ok"}
+```
+
+### GET `/api/backends/{name}/health`
+
+Probe a single named backend. Returns the same `BackendInfo` shape as `GET /api/backends`. Returns `404` for an unknown backend name.
+
+```bash
+curl http://localhost:8000/api/backends/qdrant/health
+```
+
+### GET `/api/collections/{backend}`
+
+List all collections stored in a backend.
+
+```bash
+curl http://localhost:8000/api/collections/faiss
+```
+
+```json
+[
+  { "name": "polyrag_docs_minilm",   "chunk_count": 1420, "index_type": "flat" },
+  { "name": "product_docs_bge-base", "chunk_count": 8730, "index_type": "flat" }
+]
+```
+
+### DELETE `/api/collections/{backend}/{collection}`
+
+> ⚠️ Destructive — deletes the specified collection from the backend, evicts its cached pipeline, and removes its SPLADE index.
+
+```bash
+curl -X DELETE http://localhost:8000/api/collections/faiss/polyrag_docs_minilm
+```
+
+### DELETE `/api/collections/{backend}`
+
+> ⚠️ Destructive — deletes **all** collections from the specified backend (full wipe).
+
+```bash
+curl -X DELETE http://localhost:8000/api/collections/faiss
 ```
 
 ---
@@ -863,6 +1065,119 @@ Run ground-truth Q&A evaluation against one or more backends:
 | `source_accuracy` | Whether expected sources appeared in results (0.0 if `expected_sources` is empty) |
 | `overall` | Weighted aggregate |
 | `verdict` | `PASS` (≥0.7) \| `PARTIAL` (≥0.4) \| `FAIL` (<0.4) |
+
+### GET `/api/evaluate/ragas-status`
+
+Check whether RAGAS LLM-judged scoring is available:
+
+```bash
+curl http://localhost:8000/api/evaluate/ragas-status
+```
+
+```json
+{
+  "available": true,
+  "scorer": "RagasScorer",
+  "llm": "lm_studio",
+  "metrics": ["faithfulness", "answer_relevancy", "context_precision", "context_recall"],
+  "reason": null
+}
+```
+
+When `available` is `false`, the `reason` field explains why (e.g. `"LLM endpoint unreachable"`).
+
+### GET `/api/evaluate/browse-chunks`
+
+Paginated chunk browser for building Q&A evaluation datasets.
+
+```bash
+curl "http://localhost:8000/api/evaluate/browse-chunks?backend=faiss&collection=polyrag_docs_minilm&limit=30&offset=0&search=mortality"
+```
+
+| Query Param | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `backend` | `string` | — | Backend to browse |
+| `collection` | `string` | — | Collection name |
+| `limit` | `int` | `30` | Page size |
+| `offset` | `int` | `0` | Pagination offset |
+| `search` | `string` | — | Optional keyword filter |
+
+Response: `{ "chunks": [...], "total": 1420, "offset": 0, "limit": 30 }`
+
+### POST `/api/evaluate/generate-qa`
+
+Generate a Q&A pair from a chunk using the configured LLM. Falls back to a heuristic extractor if the LLM is unavailable.
+
+```json
+{ "chunk_text": "Digital goods are non-refundable after download...", "chunk_id": "chunk-0042" }
+```
+
+Response:
+
+```json
+{
+  "question": "Are digital goods refundable after download?",
+  "answer": "No, digital goods are non-refundable once downloaded.",
+  "chunk_id": "chunk-0042",
+  "source": "llm",
+  "note": null
+}
+```
+
+`source` is `"llm"` or `"heuristic"`.
+
+### POST `/api/evaluate/import-qa`
+
+Import Q&A pairs from a JSON array or CSV text.
+
+**JSON body:**
+```json
+{
+  "items": [
+    {
+      "question": "What is the refund policy?",
+      "expected_answer": "Digital goods are non-refundable.",
+      "expected_sources": ["refund-policy.pdf"]
+    }
+  ]
+}
+```
+
+**CSV body:**
+```json
+{ "csv": "question,expected_answer,expected_sources\nWhat is the refund policy?,...,refund-policy.pdf" }
+```
+
+Response: `{ "imported_count": 5, "items": [...], "errors": [] }`
+
+### GET `/api/evaluate/results`
+
+List all evaluation run IDs.
+
+```bash
+curl http://localhost:8000/api/evaluate/results
+# → { "eval_ids": ["eval-abc123", "eval-def456"] }
+```
+
+### GET `/api/evaluate/{eval_id}`
+
+Full evaluation results including per-question, per-backend scores and RAGAS metrics.
+
+```bash
+curl http://localhost:8000/api/evaluate/eval-abc123
+```
+
+### GET `/api/evaluate/{eval_id}/export`
+
+Export evaluation results as a file download.
+
+| Query Param | Values |
+|-------------|--------|
+| `format` | `json` (default) \| `csv` |
+
+```bash
+curl "http://localhost:8000/api/evaluate/eval-abc123/export?format=csv" -o results.csv
+```
 
 ---
 
@@ -1126,36 +1441,440 @@ for trail in trails:
 
 ---
 
-## 14. API Reference Summary
+## 13. Chunks (Dry-run Preview)
+
+### POST `/api/chunks/preview`
+
+Dry-run chunking without ingesting. Useful for tuning `chunk_size`, `overlap`, and `strategy` before committing to a full ingest.
+
+#### Request Body
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `text` | `string` | — | Raw text to chunk. Use this **or** `corpus_path`. |
+| `corpus_path` | `string` | — | Server-side file path (admin use). Same format support as `/api/ingest`. |
+| `strategy` | `string` | `"section"` | `section` \| `sliding` \| `sentence` \| `paragraph` |
+| `chunk_size` | `int` | `400` | Target characters per chunk. |
+| `overlap` | `int` | `50` | Overlap characters between chunks. |
+
+```bash
+curl -X POST http://localhost:8000/api/chunks/preview \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Your document text...", "strategy": "sentence", "chunk_size": 400, "overlap": 50}'
+```
+
+#### Response
+
+```json
+{
+  "chunks": [
+    {
+      "index": 0,
+      "text": "Your document text...",
+      "tokens": 42,
+      "char_start": 0,
+      "char_end": 210,
+      "parent_id": null,
+      "chunk_type": "sentence",
+      "entities": ["Hamlet", "Denmark"]
+    }
+  ],
+  "total_chunks": 12,
+  "total_chars": 4820,
+  "avg_chunk_size": 401.7,
+  "strategy": "sentence"
+}
+```
+
+---
+
+## 14. LLM Configuration API
+
+### GET `/api/config/llm/providers`
+
+List all supported LLM providers.
+
+```bash
+curl http://localhost:8000/api/config/llm/providers
+```
+
+```json
+[
+  { "id": "lm_studio",    "label": "LM Studio",    "protocol": "openai",    "default_base_url": "http://localhost:1234/v1",        "requires_api_key": false, "notes": "Local OpenAI-compatible server" },
+  { "id": "openai",       "label": "OpenAI",        "protocol": "openai",    "default_base_url": "https://api.openai.com/v1",       "requires_api_key": true,  "notes": "" },
+  { "id": "ollama",       "label": "Ollama",        "protocol": "openai",    "default_base_url": "http://localhost:11434/v1",       "requires_api_key": false, "notes": "Local Ollama server" },
+  { "id": "groq",         "label": "Groq",          "protocol": "openai",    "default_base_url": "https://api.groq.com/openai/v1",  "requires_api_key": true,  "notes": "" },
+  { "id": "azure_openai", "label": "Azure OpenAI",  "protocol": "azure",     "default_base_url": "",                               "requires_api_key": true,  "notes": "Requires deployment name in model field" },
+  { "id": "gemini",       "label": "Google Gemini", "protocol": "google",    "default_base_url": "",                               "requires_api_key": true,  "notes": "" },
+  { "id": "anthropic",    "label": "Anthropic",     "protocol": "anthropic", "default_base_url": "https://api.anthropic.com",      "requires_api_key": true,  "notes": "" }
+]
+```
+
+### GET `/api/config/llm`
+
+Returns the current LLM configuration. The `api_key` is **never** returned — only whether it is set.
+
+```bash
+curl http://localhost:8000/api/config/llm
+```
+
+```json
+{
+  "provider": "lm_studio",
+  "base_url": "http://localhost:1234/v1",
+  "api_key_set": false,
+  "model": "local-model",
+  "temperature": 0.2,
+  "max_tokens": 512,
+  "timeout": 60
+}
+```
+
+### PUT `/api/config/llm`
+
+Update the LLM configuration. Immediately flushes all cached pipelines so the new config takes effect on the next request. Returns `422` for an unknown `provider` value.
+
+```json
+{
+  "provider": "openai",
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "sk-...",
+  "model": "gpt-4o-mini",
+  "temperature": 0.2,
+  "max_tokens": 512,
+  "timeout": 60
+}
+```
+
+### GET `/api/config/llm/test`
+
+Probe the currently configured LLM endpoint with a lightweight request.
+
+```bash
+curl http://localhost:8000/api/config/llm/test
+```
+
+```json
+{
+  "reachable": true,
+  "provider": "lm_studio",
+  "base_url": "http://localhost:1234/v1",
+  "model": "local-model",
+  "error": null
+}
+```
+
+When `reachable` is `false`, the `error` field contains the failure reason.
+
+---
+
+## 15. Prompt Management
+
+### GET `/api/prompts`
+
+List all prompt templates registered in the system with their metadata.
+
+```bash
+curl http://localhost:8000/api/prompts
+```
+
+```json
+[
+  {
+    "key": "query_rewrite",
+    "method_name": "Query Rewrite",
+    "method_id": "rewrite",
+    "pipeline_stage": "query",
+    "description": "Rewrites noisy user queries into clean retrieval queries.",
+    "template": "You are an expert query optimiser. Rewrite the following query..."
+  }
+]
+```
+
+### PUT `/api/prompts/{key}`
+
+Update a prompt template. Changes take effect on the **next** search request (no restart required).
+
+```bash
+curl -X PUT http://localhost:8000/api/prompts/query_rewrite \
+  -H "Content-Type: application/json" \
+  -d '{"template": "Rewrite this query for better retrieval: {query}"}'
+```
+
+### POST `/api/prompts/{key}/reset`
+
+Reset a prompt to its factory default.
+
+```bash
+curl -X POST http://localhost:8000/api/prompts/query_rewrite/reset
+```
+
+```json
+{ "status": "reset", "key": "query_rewrite", "template": "You are an expert query optimiser..." }
+```
+
+---
+
+## 16. Purge
+
+### DELETE `/api/purge/{collection}`
+
+> ⚠️ Destructive — deep purge a collection from **all** storage layers simultaneously:
+> 1. All 6 vector backends
+> 2. Knowledge graph JSON snapshot
+> 3. Kuzu embedded graph DB
+> 4. SPLADE index directory (`data/splade/`)
+> 5. BM25 pkl files (`data/bm25/`)
+> 6. Pipeline LRU cache
+
+```bash
+curl -X DELETE http://localhost:8000/api/purge/polyrag_docs_minilm
+```
+
+```json
+{
+  "collection": "polyrag_docs_minilm",
+  "summary": {
+    "backends_deleted": 2,
+    "backends_skipped": 4,
+    "backends_error": 0,
+    "graph_snapshot_deleted": true,
+    "kuzu_cleared": true,
+    "splade_files_removed": 3,
+    "bm25_pkls_removed": 2,
+    "pipelines_evicted": 1
+  },
+  "details": { }
+}
+```
+
+### DELETE `/api/purge`
+
+> ⚠️ Destructive — purge **all** collections from **all** storage layers. This is a full system wipe.
+
+```bash
+curl -X DELETE http://localhost:8000/api/purge
+```
+
+```json
+{
+  "collections_purged": ["polyrag_docs_minilm", "product_docs_bge-base"],
+  "count": 2,
+  "kuzu_cleared": true,
+  "bm25_pkls_removed": 5,
+  "pipelines_evicted": 3,
+  "per_collection": { }
+}
+```
+
+---
+
+## 17. System / Operations
+
+> Both `GET /api/health` (basic) and `GET /api/system/health` (detailed) are available.
+
+### GET `/api/system/health`
+
+Detailed system health including uptime, version, rate limiting status, pipeline cache stats, job queue summary, and BM25 snapshot count.
+
+```bash
+curl http://localhost:8000/api/system/health
+```
+
+```json
+{
+  "status": "ok",
+  "version": "14.2.0",
+  "uptime_seconds": 3612.4,
+  "rate_limiting": true,
+  "pipeline_cache": {
+    "cached": 2,
+    "max": 10,
+    "utilisation_pct": 20.0
+  },
+  "jobs": {
+    "pending": 0,
+    "running": 1,
+    "done": 42,
+    "error": 1
+  },
+  "bm25_snapshots": 3
+}
+```
+
+### GET `/api/system/cache`
+
+List pipeline LRU cache entries in eviction order (MRU first).
+
+```bash
+curl http://localhost:8000/api/system/cache
+```
+
+```json
+{
+  "max_pipelines": 10,
+  "cached": 2,
+  "lru_entries": [
+    { "rank": 1, "backend": "faiss",  "collection": "polyrag_docs_minilm",   "embedding_model": "all-MiniLM-L6-v2" },
+    { "rank": 2, "backend": "qdrant", "collection": "product_docs_bge-base", "embedding_model": "BAAI/bge-base-en-v1.5" }
+  ],
+  "note": "rank 1 = most recently used (last to be evicted)"
+}
+```
+
+### DELETE `/api/system/cache`
+
+> ⚠️ Use with caution — flushes all cached pipelines. The next query to each pipeline will trigger a cold start (~10–30 s per pipeline).
+
+```bash
+curl -X DELETE http://localhost:8000/api/system/cache
+```
+
+```json
+{ "flushed": 2, "pipelines_stopped": 2, "message": "All pipeline caches cleared." }
+```
+
+---
+
+## 18. Jobs
+
+### GET `/api/jobs`
+
+List all jobs (ingest and other background jobs) sorted newest-first.
+
+```bash
+curl http://localhost:8000/api/jobs
+```
+
+Returns `List[JobStatus]`. Each entry has the same fields as `GET /api/ingest/{job_id}/status`: `job_id`, `status`, `backend`, `created_at`, `updated_at`, `log_lines[]`, `result`, `error`.
+
+### GET `/api/jobs/{job_id}`
+
+Full job detail including all log lines. Returns `404` if the job ID is not found.
+
+```bash
+curl http://localhost:8000/api/jobs/job-abc123
+```
+
+---
+
+## 19. Feedback
+
+### POST `/api/feedback`
+
+Submit relevance feedback on a retrieved chunk.
+
+```json
+{
+  "query": "What does Hamlet say about mortality?",
+  "chunk_id": "chunk-0042",
+  "backend": "faiss",
+  "collection_name": "polyrag_docs_minilm",
+  "relevant": true
+}
+```
+
+### GET `/api/feedback`
+
+Retrieve all stored feedback entries.
+
+```bash
+curl http://localhost:8000/api/feedback
+```
+
+```json
+{
+  "count": 14,
+  "entries": [
+    {
+      "query": "What does Hamlet say about mortality?",
+      "chunk_id": "chunk-0042",
+      "backend": "faiss",
+      "collection_name": "polyrag_docs_minilm",
+      "relevant": true,
+      "timestamp": "2026-03-20T15:11:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## 20. API Reference Summary
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/api/health` | Health check |
-| `POST` | `/api/ingest` | Ingest documents (async, per backend) |
-| `GET` | `/api/ingest/{job_id}/status` | Poll ingest job status |
-| `GET` | `/api/ingest/{job_id}/stream` | SSE real-time ingest log stream |
-| `POST` | `/api/search` | **Core RAG query** — multi-backend, returns answer + full traceability |
-| **`POST`** | **`/api/rag`** | **⭐ Unified agentic RAG — profile-based single-call production endpoint** |
+| **Health & System** | | |
+| `GET` | `/api/health` | Basic health check — `{"status": "ok"}` |
+| `GET` | `/api/system/health` | Detailed health: uptime, version, cache stats, job counts, BM25 snapshots |
+| `GET` | `/api/system/cache` | List pipeline LRU cache entries |
+| `DELETE` | `/api/system/cache` | ⚠️ Flush all cached pipelines (cold start on next query) |
+| **Unified Agentic RAG** | | |
+| **`POST`** | **`/api/rag`** | **⭐ Unified agentic RAG — profile-based production endpoint** |
 | `POST` | `/api/rag/profiles` | Create a saved RAG configuration profile |
-| `GET` | `/api/rag/profiles` | List all profiles |
+| `GET` | `/api/rag/profiles` | List all saved profiles |
 | `GET` | `/api/rag/profiles/{id}` | Get a profile by ID |
 | `PUT` | `/api/rag/profiles/{id}` | Update a profile |
 | `DELETE` | `/api/rag/profiles/{id}` | Delete a profile |
-| `GET` | `/api/backends` | List all backends with health status |
+| **Search** | | |
+| `POST` | `/api/search` | **Core RAG query** — multi-backend, returns answer + full traceability |
+| **Ingest** | | |
+| `POST` | `/api/ingest` | Ingest documents (async, per backend). Supports `.txt`, `.pdf`, `.pptx`. |
+| `GET` | `/api/ingest/jobs` | List all ingest jobs, sorted newest-first |
+| `GET` | `/api/ingest/{job_id}/status` | Poll ingest job status |
+| `GET` | `/api/ingest/{job_id}/stream` | SSE real-time ingest log stream |
+| **Chunks** | | |
+| `POST` | `/api/chunks/preview` | Dry-run chunking without ingesting |
+| **Retrieval Trails** | | |
 | `GET` | `/api/retrieval-trails` | Audit log of all past searches |
 | `DELETE` | `/api/retrieval-trails` | Clear audit log |
+| `GET` | `/api/retrieval-trails/analysis` | Per-method contribution statistics across recorded trails |
+| **LLM Traces** | | |
 | `GET` | `/api/traces` | LLM call history (prompts + responses) |
 | `DELETE` | `/api/traces` | Clear LLM trace log |
-| `GET` | `/api/graph/{collection}` | Entity-relation knowledge graph |
-| `POST` | `/api/graph/{collection}/enhance` | LLM-enhanced graph extraction (background) |
+| **Knowledge Graph** | | |
+| `GET` | `/api/graph` | List collections with a persisted graph snapshot |
+| `GET` | `/api/graph/{collection}` | Entity-relation knowledge graph for a collection |
+| `POST` | `/api/graph/{collection}/enhance` | LLM-enhanced graph extraction (background job) |
+| `GET` | `/api/graph/{collection}/enhance-status` | LLM enhancement status |
+| `GET` | `/api/graph/{collection}/enhance/{job_id}/stream` | SSE stream for the enhance background job |
+| `DELETE` | `/api/graph/{collection}` | ⚠️ Delete graph snapshot + Kuzu DB for a collection |
+| `DELETE` | `/api/graph` | ⚠️ Delete all graph snapshots + entire Kuzu DB |
+| **Backends** | | |
+| `GET` | `/api/backends` | List all backends with health status |
+| `GET` | `/api/backends/{name}/health` | Probe a single named backend |
+| `GET` | `/api/collections/{backend}` | List collections in a backend |
+| `DELETE` | `/api/collections/{backend}/{collection}` | ⚠️ Delete a collection (evicts cache + SPLADE) |
+| `DELETE` | `/api/collections/{backend}` | ⚠️ Delete all collections in a backend (full wipe) |
+| **Evaluate** | | |
 | `POST` | `/api/evaluate` | Ground-truth Q&A quality evaluation |
+| `GET` | `/api/evaluate/ragas-status` | Check RAGAS scoring availability |
+| `GET` | `/api/evaluate/browse-chunks` | Paginated chunk browser for building Q&A datasets |
+| `POST` | `/api/evaluate/generate-qa` | Generate a Q&A pair from a chunk (LLM or heuristic fallback) |
+| `POST` | `/api/evaluate/import-qa` | Import Q&A pairs from JSON array or CSV |
+| `GET` | `/api/evaluate/results` | List all evaluation run IDs |
+| `GET` | `/api/evaluate/{eval_id}` | Full evaluation results including RAGAS metrics |
+| `GET` | `/api/evaluate/{eval_id}/export` | Export results as JSON or CSV file download |
+| **Compare** | | |
 | `POST` | `/api/compare` | Benchmark backends head-to-head |
-| `GET` | `/api/chunks` | Browse stored chunks |
-| `POST` | `/api/feedback` | Submit relevance feedback on a chunk |
-| `GET` | `/api/prompts` | List all LLM prompt templates |
+| **LLM Configuration** | | |
+| `GET` | `/api/config/llm/providers` | List all supported LLM providers |
+| `GET` | `/api/config/llm` | Current LLM config (api_key is never returned) |
+| `PUT` | `/api/config/llm` | Update LLM config (flushes all cached pipelines) |
+| `GET` | `/api/config/llm/test` | Probe the configured LLM endpoint |
+| **Prompts** | | |
+| `GET` | `/api/prompts` | List all prompt templates with metadata |
 | `PUT` | `/api/prompts/{key}` | Update a prompt template |
 | `POST` | `/api/prompts/{key}/reset` | Reset a prompt to factory default |
-| `GET` | `/api/jobs/{id}/status` | Generic job status |
+| **Purge** | | |
+| `DELETE` | `/api/purge/{collection}` | ⚠️ Deep purge a collection from all storage layers |
+| `DELETE` | `/api/purge` | ⚠️ Purge ALL collections from ALL storage layers |
+| **Jobs** | | |
+| `GET` | `/api/jobs` | List all jobs, sorted newest-first |
+| `GET` | `/api/jobs/{job_id}` | Full job detail including log lines (404 if not found) |
+| **Feedback** | | |
+| `POST` | `/api/feedback` | Submit relevance feedback on a chunk |
+| `GET` | `/api/feedback` | List all feedback entries |
 
 ---
 
