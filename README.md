@@ -2,7 +2,7 @@
 
 > **Stop guessing. Start knowing exactly why your RAG works — or doesn't.**
 
-[![CI](https://github.com/anand08151947-dot/PolyRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/anand08151947-dot/PolyRAG/actions)
+[![CI](https://github.com/phoenice-labs/PolyRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/phoenice-labs/PolyRAG/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![React 19](https://img.shields.io/badge/react-19-61DAFB)](https://react.dev/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e)](LICENSE)
@@ -56,7 +56,7 @@ Everything runs locally. No cloud account required. LLM is optional — retrieva
 ### Install
 
 ```powershell
-git clone https://github.com/anand08151947-dot/PolyRAG.git
+git clone https://github.com/phoenice-labs/PolyRAG.git
 cd PolyRAG
 .\install.ps1          # core dependencies
 .\install.ps1 -Full    # includes Weaviate, PGVector client libraries
